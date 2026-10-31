@@ -17,6 +17,7 @@
     "db:migrate": "tsx scripts/migrate.ts",
     "db:studio": "drizzle-kit studio",
     "db:seed": "tsx scripts/seed.ts",
+    "db:backup": "node scripts/backup.mjs",
     "test": "vitest run",
     "test:watch": "vitest"
   },

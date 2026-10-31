@@ -25,6 +25,7 @@ pnpm dev                    # http://127.0.0.1:3000
 | `pnpm db:generate` | Generate a Drizzle migration after changing `server/database/schema.ts` |
 | `pnpm db:migrate` | Apply committed migrations from `server/database/migrations/` |
 | `pnpm db:studio` | Drizzle Studio |
+| `pnpm db:backup` | Verified, gzipped online backup to `~/backups/finance` (keeps 30 days) |
 | `pnpm db:seed` | Insert demo data. It is idempotent and never overwrites existing rows. It never runs automatically. |
 
 Environment variables: `DATABASE_PATH` (default `./data/finance.sqlite`), `HOST`, `PORT`.
@@ -96,27 +97,23 @@ Files: `deploy/finance.service` (systemd, with a 300 MB memory limit and a read-
 
 ## Backup and restore
 
-The whole state is one SQLite file. Use SQLite's online backup, which is safe while the app is running, rather
-than copying the file, because the `-wal` file may hold recent writes:
+`pnpm db:backup` (`scripts/backup.mjs`) takes an online snapshot with SQLite's backup API. That's safe while the
+app is running and includes recent writes still in the `-wal` file. It runs `integrity_check` on the snapshot,
+gzips it to `~/backups/finance/finance-<UTC timestamp>.sqlite.gz` (mode 600), and deletes snapshots older than
+30 days (`BACKUP_KEEP_DAYS`). Don't back up by copying `data/finance.sqlite` directly.
 
-```sh
-mkdir -p ~/backups/finance
-sqlite3 data/finance.sqlite ".backup '$HOME/backups/finance/finance-$(date +%F).sqlite'"
-# without the sqlite3 CLI:
-node -e "require('better-sqlite3')('data/finance.sqlite').backup(process.argv[1]).then(()=>console.log('ok'))" ~/backups/finance/finance-$(date +%F).sqlite
+Daily at 03:15 from the crontab (`crontab -e`), logging to `~/backups/finance.log`:
 ```
-
-Daily cron example (`crontab -e`), keeping 30 days:
+15 3 * * * cd /home/you/projects/finance && /home/you/.local/bin/node scripts/backup.mjs >> /home/you/backups/finance.log 2>&1
 ```
-15 3 * * * cd ~/projects/finance && node -e "require('better-sqlite3')('data/finance.sqlite').backup(process.argv[1])" ~/backups/finance/finance-$(date +\%F).sqlite && find ~/backups/finance -name '*.sqlite' -mtime +30 -delete
-```
-Also copy backups off the VPS.
+Check it with `tail ~/backups/finance.log; ls -lh ~/backups/finance`. Also keep copies off the VPS.
 
 To restore:
 ```sh
 sudo systemctl stop finance
+cp data/finance.sqlite data/finance.sqlite.before-restore 2>/dev/null || true
 rm -f data/finance.sqlite-wal data/finance.sqlite-shm
-cp ~/backups/finance/finance-YYYY-MM-DD.sqlite data/finance.sqlite
+gunzip -c ~/backups/finance/finance-YYYY-MM-DD-HH-MM-SS.sqlite.gz > data/finance.sqlite
 pnpm db:migrate                      # brings an older backup up to the current schema
 sudo systemctl start finance
 ```
