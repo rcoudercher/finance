@@ -76,7 +76,7 @@ limited to devices on the owner's private network. Never expose this site on a p
 One-time setup:
 ```sh
 sudo bash deploy/install-root.sh   # swap, systemd unit (started), nginx site
-# DNS DNS: finance.example.com  A  <private-ip>  (DNS-only, grey cloud)
+# DNS: covered by the DNS wildcard *.example.com A <private-ip> (DNS-only)
 ```
 
 Deploy or update:
