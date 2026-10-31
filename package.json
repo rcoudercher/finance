@@ -1,0 +1,45 @@
+{
+  "name": "finance",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@12.16.1",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "dev": "nuxt dev --host 127.0.0.1",
+    "build": "nuxt build",
+    "preview": "nuxt preview",
+    "start": "node --env-file-if-exists=.env .output/server/index.mjs",
+    "postinstall": "nuxt prepare",
+    "typecheck": "nuxt typecheck",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "tsx scripts/migrate.ts",
+    "db:studio": "drizzle-kit studio",
+    "db:seed": "tsx scripts/seed.ts",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@internationalized/date": "^3.12.4",
+    "@nuxt/ui": "4.12.0",
+    "@tanstack/charts": "1.1.0",
+    "better-sqlite3": "13.0.3",
+    "drizzle-orm": "0.45.4",
+    "nuxt": "4.6.3",
+    "tailwindcss": "^4.3.3",
+    "vue": "^3.5.44",
+    "vue-router": "^5.4.0",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@iconify-json/lucide": "^1.2.149",
+    "@types/better-sqlite3": "^9.6.0",
+    "@types/node": "^26.6.6",
+    "drizzle-kit": "0.31.11",
+    "tsx": "^4.23.15",
+    "typescript": "6.0.3",
+    "vitest": "5.0.5",
+    "vue-tsc": "3.3.14"
+  }
+}
