@@ -3,7 +3,7 @@
 Single-user personal finance tracker: assets, dated balance valuations, and a EUR net-worth history.
 Nuxt 4 · Nuxt UI (UChart) · Drizzle ORM · SQLite (better-sqlite3) · Zod · pnpm.
 
-Served at **https://finance.example.com**. That address only works over the VPN and asks for a Basic-auth login.
+Served at **https://finance.example.com**. That address only works over the VPN, which is the access control.
 
 ## Setup
 
@@ -70,12 +70,12 @@ locked currency.
 ## Production on the VPS
 
 The app listens on `127.0.0.1:8081` only. Nginx terminates HTTPS for `finance.example.com` with the `*.example.com`
-wildcard certificate. It listens only on the the VPN IP and adds HTTP Basic auth, because **the app has no
-login of its own**. See `~/projects/proxy/SETUP.md` for the shared Nginx/TLS setup.
+wildcard certificate. It listens only on the the VPN IP. **The app has no login of its own**, so access is
+limited to devices on the owner's private network. Never expose this site on a public interface without adding authentication. See `~/projects/proxy/SETUP.md` for the shared Nginx/TLS setup.
 
 One-time setup:
 ```sh
-sudo bash deploy/install-root.sh   # swap, htpasswd (prompts), systemd unit, nginx site
+sudo bash deploy/install-root.sh   # swap, systemd unit (started), nginx site
 # DNS DNS: finance.example.com  A  <private-ip>  (DNS-only, grey cloud)
 ```
 
@@ -88,7 +88,7 @@ pnpm build
 DATABASE_PATH=$PWD/data/finance.sqlite pnpm db:migrate
 sudo systemctl restart finance
 systemctl status finance; journalctl -u finance -n 50
-curl -u USER https://finance.example.com/api/dashboard?range=1M   # from a the VPN device
+curl https://finance.example.com/api/dashboard?range=1M   # from a the VPN device
 ```
 
 Files: `deploy/finance.service` (systemd, with a 300 MB memory limit and a read-only home except `data/`),
