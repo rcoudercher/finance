@@ -2,6 +2,7 @@ import { z } from 'zod'
 import { isValidIsoDate } from './dates'
 import { isValidRate, MoneyError, parseDecimalToMinor, SUPPORTED_CURRENCIES } from './money'
 import { RANGE_PRESETS } from './finance'
+import { BUDGET_KIND_VALUES, BUDGET_RANGE_PRESETS, isValidMonth } from './budget'
 
 export const ASSET_CATEGORY_VALUES = ['bank', 'investment', 'crypto', 'real_estate', 'cash', 'other'] as const
 export const VALUATION_SOURCE_VALUES = ['manual', 'import', 'api'] as const
@@ -97,3 +98,54 @@ export const ratesUpsertSchema = z.object({
 
 export type AssetCreateInput = z.input<typeof assetCreateSchema>
 export type ValuationCreateInput = z.input<typeof valuationCreateSchema>
+
+// Budget
+
+export const monthString = z.string().refine(isValidMonth, 'Must be a valid month in YYYY-MM format')
+
+/** Monthly EUR amount: a non-negative decimal string with up to two decimals ("950", "12.99"). 0 = stopped. */
+export const budgetAmount = z.string().trim().transform((value, ctx) => {
+  try {
+    const minor = parseDecimalToMinor(value)
+    if (minor < 0) {
+      ctx.addIssue({ code: 'custom', message: 'Amount cannot be negative' })
+      return z.NEVER
+    }
+    return minor
+  }
+  catch (e) {
+    ctx.addIssue({ code: 'custom', message: e instanceof MoneyError ? e.message : 'Invalid amount' })
+    return z.NEVER
+  }
+})
+
+export const budgetItemCreateSchema = z.object({
+  name: z.string().trim().min(1, 'Name is required').max(100),
+  kind: z.enum(BUDGET_KIND_VALUES),
+  notes: optionalText(1000),
+  /** First month the item applies, and its monthly amount from then on. */
+  month: monthString,
+  amount: budgetAmount,
+}).strict()
+
+export const budgetItemUpdateSchema = z.object({
+  name: z.string().trim().min(1, 'Name is required').max(100).optional(),
+  kind: z.enum(BUDGET_KIND_VALUES).optional(),
+  notes: optionalText(1000).optional(),
+}).strict()
+
+/** PUT /api/budget/items/:id/amounts/:month { amount }: set the amount from that month on. */
+export const budgetAmountSetSchema = z.object({
+  amount: budgetAmount,
+}).strict()
+
+export const budgetMonthQuerySchema = z.object({
+  month: monthString.optional(),
+})
+
+export const budgetHistoryQuerySchema = z.object({
+  range: z.enum(BUDGET_RANGE_PRESETS).optional(),
+  from: monthString.optional(),
+  to: monthString.optional(),
+}).refine(q => (q.from === undefined) === (q.to === undefined), { message: 'from and to must be provided together', path: ['from'] })
+  .refine(q => !q.from || !q.to || q.from <= q.to, { message: 'from must be on or before to', path: ['from'] })

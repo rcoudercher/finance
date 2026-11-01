@@ -51,8 +51,40 @@ export const rates = sqliteTable('rates', {
   check('rates_rate_check', sql`${t.rate} glob '[0-9]*' and ${t.rate} not glob '*[^0-9.]*'`),
 ])
 
+// Budget: recurring monthly items (income or expense). Their amounts are versioned by month: each
+// row in budget_amounts sets the item's monthly amount from that month on, until the next row. 0 = stopped.
+export const BUDGET_KINDS = ['income', 'expense'] as const
+
+export const budgetItems = sqliteTable('budget_items', {
+  id: text('id').primaryKey(), // lowercase ULID
+  name: text('name').notNull(),
+  kind: text('kind', { enum: BUDGET_KINDS }).notNull(),
+  notes: text('notes'),
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+  updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
+}, t => [
+  check('budget_items_kind_check', sql`${t.kind} in ('income', 'expense')`),
+  check('budget_items_name_check', sql`length(trim(${t.name})) > 0`),
+])
+
+export const budgetAmounts = sqliteTable('budget_amounts', {
+  id: text('id').primaryKey(),
+  itemId: text('item_id').notNull().references(() => budgetItems.id, { onDelete: 'restrict', onUpdate: 'restrict' }),
+  month: text('month').notNull(), // YYYY-MM, effective from this month on
+  amount: integer('amount', { mode: 'number' }).notNull(), // EUR cents per month, >= 0 (0 = stopped)
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+  updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
+}, t => [
+  uniqueIndex('budget_amounts_item_month_unique').on(t.itemId, t.month),
+  index('budget_amounts_month_idx').on(t.month),
+  check('budget_amounts_month_check', sql`${t.month} glob '[0-9][0-9][0-9][0-9]-[0-9][0-9]'`),
+  check('budget_amounts_amount_check', sql`typeof(${t.amount}) = 'integer' and ${t.amount} >= 0 and ${t.amount} <= 999999999999999`),
+])
+
 export type Asset = typeof assets.$inferSelect
 export type NewAsset = typeof assets.$inferInsert
 export type Valuation = typeof valuations.$inferSelect
 export type NewValuation = typeof valuations.$inferInsert
 export type Rate = typeof rates.$inferSelect
+export type BudgetItem = typeof budgetItems.$inferSelect
+export type BudgetAmount = typeof budgetAmounts.$inferSelect

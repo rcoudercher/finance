@@ -41,5 +41,49 @@ export interface RateDTO {
   source: string
 }
 
+import type { BudgetHistoryResult, BudgetKind, BudgetMonthResult } from '../utils/budget'
+
 export type { DashboardResult as DashboardDTO } from '../utils/finance'
 
+// Budget. Amounts are monthly EUR decimal strings ("950.00"); months are "YYYY-MM".
+
+export type BudgetItemStatus = 'active' | 'stopped' | 'planned'
+
+export interface BudgetItemDTO {
+  id: string
+  name: string
+  kind: BudgetKind
+  notes: string | null
+  /** active: non-zero amount this month; stopped: 0 this month; planned: first amount is in a future month. */
+  status: BudgetItemStatus
+  currentAmount: string | null
+  currentSince: string | null
+  startMonth: string | null
+  nextChange: { month: string, amount: string } | null
+  amountCount: number
+  createdAt: string
+  updatedAt: string
+}
+
+export interface BudgetAmountDTO {
+  id: string
+  month: string
+  amount: string
+  /** Amount it replaced; null for the item's first amount. */
+  previousAmount: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+export interface BudgetItemDetailDTO extends BudgetItemDTO {
+  /** Newest first. */
+  amounts: BudgetAmountDTO[]
+}
+
+export type BudgetHistoryDTO = BudgetHistoryResult
+
+export interface BudgetMonthDTO extends BudgetMonthResult {
+  previousMonth: string
+  nextMonth: string
+  itemCount: number
+}

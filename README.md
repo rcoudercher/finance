@@ -63,6 +63,17 @@ Environment variables: `DATABASE_PATH` (default `./data/finance.sqlite`), `HOST`
 - Valuations can be created, corrected and deleted. An asset can be deleted permanently, together with all of its
   valuations, in one transaction (from the danger zone on its page). There is no archive or undo: restore from a backup.
 
+## Budget rules
+
+- A **budget item** is a recurring monthly **income** or **expense** (salary, rent, a subscription). Amounts are EUR.
+- Its amount is **versioned by month** (`YYYY-MM`): each change applies from its month until the next change, like
+  valuations carried forward. The amount in a month is the latest change on or before it. Future months are allowed
+  (planned changes); "this month" uses the Europe/Paris calendar.
+- Items don't end: set the amount to **0** to stop one. It then drops out of the monthly budget but keeps its history.
+  An item's first amount must be greater than 0, and an item always keeps at least one amount.
+- A month's budget = every item's amount in effect that month. **Left over** = income − expenses.
+- Deleting an item removes it and all its amounts, from past months too. To stop an item, set it to 0 instead.
+
 ## API
 
 | Method | Path | Notes |
@@ -73,6 +84,11 @@ Environment variables: `DATABASE_PATH` (default `./data/finance.sqlite`), `HOST`
 | PATCH / DELETE | `/api/valuations/:id` | |
 | GET | `/api/dashboard` | `?range=1M\|3M\|6M\|1Y\|ALL` or `?from=YYYY-MM-DD&to=YYYY-MM-DD` |
 | GET / PUT | `/api/rates` | GET `?currency=BTC[&from=&to=]`. PUT `{ currency, source, rates: [{ date, rate }] }` inserts or replaces those days |
+| GET | `/api/budget` | `?month=YYYY-MM` (default: this month). Lines in effect, totals, and the previous month's totals |
+| GET | `/api/budget/history` | `?range=12M\|24M\|ALL` or `?from=YYYY-MM&to=YYYY-MM`. Monthly totals and the amount changes in the range |
+| GET / POST | `/api/budget/items` | POST `{ name, kind: income\|expense, notes?, month, amount }` creates the item with its first amount |
+| GET / PATCH / DELETE | `/api/budget/items/:id` | GET includes the amount history (newest first). DELETE removes the item and its amounts (204) |
+| PUT / DELETE | `/api/budget/items/:id/amounts/:month` | PUT `{ amount }` sets the amount from that month on (`"0"` = stopped). DELETE undoes that month's change |
 
 Errors are JSON `{ statusCode, statusMessage, message, data? }`:
 **400** for validation errors (`data.issues`), **404** for a missing record, **409** for a duplicate date or a

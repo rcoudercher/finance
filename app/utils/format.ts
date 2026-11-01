@@ -88,3 +88,24 @@ export function apiErrorMessage(error: unknown): string {
   const e = error as { data?: { message?: string }, message?: string } | null
   return e?.data?.message ?? e?.message ?? 'Something went wrong'
 }
+
+const monthLong = new Intl.DateTimeFormat('en-GB', { month: 'long', year: 'numeric', timeZone: 'UTC' })
+
+/** "2026-11" -> "November 2026". */
+export function formatMonth(month: string | null | undefined): string {
+  return month ? monthLong.format(asUtc(`${month}-01`)) : '—'
+}
+
+/** "2026-11" -> "Nov 2026". */
+export function formatMonthShort(month: string): string {
+  return monthYear.format(asUtc(`${month}-01`))
+}
+
+export const BUDGET_KIND_OPTIONS = [
+  { label: 'Expense', value: 'expense' },
+  { label: 'Income', value: 'income' },
+] as const
+
+export function budgetKindLabel(value: string): string {
+  return BUDGET_KIND_OPTIONS.find(o => o.value === value)?.label ?? value
+}

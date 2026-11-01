@@ -12,6 +12,7 @@ export interface ChartSeries {
 }
 
 export interface ChartRow {
+  /** YYYY-MM-DD, or YYYY-MM when `monthly` is set. */
   date: string
   /** Decimal strings; null = unknown (rendered as a gap). */
   values: Record<string, string | null>
@@ -26,7 +27,9 @@ const props = withDefaults(defineProps<{
   legend?: boolean
   height?: number
   label: string
-}>(), { currency: 'EUR', legend: false, height: 320 })
+  /** Rows are months (YYYY-MM) rather than days. */
+  monthly?: boolean
+}>(), { currency: 'EUR', legend: false, height: 320, monthly: false })
 
 interface Point {
   date: string
@@ -63,6 +66,7 @@ const tickValues = computed(() => {
 })
 
 const tickFormat = computed(() => {
+  if (props.monthly) return formatMonthShort
   const span = props.rows.length
   return span > 190 ? formatMonthYear : formatDateShort
 })
@@ -109,7 +113,7 @@ function tooltipRow(focused: readonly { datum: unknown }[]) {
     <template #tooltip="{ points: focused }">
       <template v-if="tooltipRow(focused)">
         <p class="font-medium text-highlighted">
-          {{ formatDate(tooltipRow(focused)!.date) }}
+          {{ monthly ? formatMonth(tooltipRow(focused)!.date) : formatDate(tooltipRow(focused)!.date) }}
         </p>
         <div v-for="s in series" :key="s.key" class="flex items-center gap-1.5">
           <span class="size-2 shrink-0 rounded-full" :style="{ backgroundColor: s.color }" />
