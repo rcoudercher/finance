@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { isValidIsoDate } from './dates'
-import { MoneyError, parseDecimalToMinor, SUPPORTED_CURRENCIES } from './money'
+import { isValidRate, MoneyError, parseDecimalToMinor, SUPPORTED_CURRENCIES } from './money'
 import { RANGE_PRESETS } from './finance'
 
 export const ASSET_CATEGORY_VALUES = ['bank', 'investment', 'crypto', 'real_estate', 'cash', 'other'] as const
@@ -47,15 +47,21 @@ export const assetUpdateSchema = z.object({
   color: hexColor.nullish().transform(v => v?.toLowerCase() ?? null).optional(),
 }).strict()
 
+/**
+ * Amount as a decimal string ("1234.56", "0.1"). Its allowed precision depends on the asset's currency
+ * (2 decimals for fiat, 8 for BTC), so the repository converts it to minor units once the asset is known.
+ */
+export const decimalString = z.string().trim().regex(/^-?\d{1,15}(\.\d{1,8})?$/, 'Amount must be a decimal number such as 1234.56')
+
 export const valuationCreateSchema = z.object({
   date: isoDate,
-  value: decimalAmount,
+  value: decimalString,
   source: z.enum(VALUATION_SOURCE_VALUES).default('manual'),
 }).strict()
 
 export const valuationUpdateSchema = z.object({
   date: isoDate.optional(),
-  value: decimalAmount.optional(),
+  value: decimalString.optional(),
   source: z.enum(VALUATION_SOURCE_VALUES).optional(),
 }).strict()
 
@@ -70,6 +76,24 @@ export const dashboardQuerySchema = z.object({
   to: isoDate.optional(),
 }).refine(q => (q.from === undefined) === (q.to === undefined), { message: 'from and to must be provided together', path: ['from'] })
   .refine(q => !q.from || !q.to || q.from <= q.to, { message: 'from must be on or before to', path: ['from'] })
+
+export const rateCurrencySchema = z.enum(['BTC'])
+
+export const ratesQuerySchema = z.object({
+  currency: rateCurrencySchema,
+  from: isoDate.optional(),
+  to: isoDate.optional(),
+})
+
+/** Upsert daily EUR rates for one currency: { currency: "BTC", source: "coinbase:spot", rates: [{ date, rate }] }. */
+export const ratesUpsertSchema = z.object({
+  currency: rateCurrencySchema,
+  source: z.string().trim().min(1).max(50),
+  rates: z.array(z.object({
+    date: isoDate,
+    rate: z.string().trim().refine(isValidRate, 'Rate must be a positive decimal number such as 69987.075'),
+  }).strict()).min(1).max(5000),
+}).strict()
 
 export type AssetCreateInput = z.input<typeof assetCreateSchema>
 export type ValuationCreateInput = z.input<typeof valuationCreateSchema>

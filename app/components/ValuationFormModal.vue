@@ -4,6 +4,7 @@ import { CalendarDate, parseDate } from '@internationalized/date'
 import { z } from 'zod'
 import type { ValuationDTO } from '#shared/types/api'
 import { parisDate } from '#shared/utils/dates'
+import { currencyDecimals, minorToDecimal } from '#shared/utils/money'
 
 const props = defineProps<{
   assetId: string
@@ -17,9 +18,13 @@ const emit = defineEmits<{ saved: [ValuationDTO] }>()
 const toast = useToast()
 
 const today = parisDate()
+const decimals = computed(() => currencyDecimals(props.currency))
+/** Largest amount the API accepts: 9 999 999 999 999.99 EUR, 9 999 999.99999999 BTC. */
+const maxAmount = computed(() => (10 ** 15 - 1) / 10 ** decimals.value)
 const schema = z.object({
   date: z.string().min(1, 'Date is required').refine(d => d <= today, 'Date cannot be in the future'),
-  value: z.string().trim().regex(/^-?\d{1,13}(\.\d{1,2})?$/, 'Use a number with at most two decimals, e.g. 1234.56'),
+  value: z.number({ error: 'Balance is required' })
+    .refine(v => Math.abs(v) <= maxAmount.value, 'Amount is out of range'),
   source: z.enum(['manual', 'import', 'api']),
 })
 type Schema = z.output<typeof schema>
@@ -32,7 +37,7 @@ watch(open, (isOpen) => {
   if (!isOpen) return
   const v = props.valuation
   state.date = v?.date ?? today
-  state.value = v?.value ?? ''
+  state.value = v ? Number(v.value) : undefined
   state.source = v?.source ?? 'manual'
   dateValue.value = parseDate(state.date)
 }, { immediate: true })
@@ -43,17 +48,24 @@ function onDate(value: unknown) {
   state.date = d ? d.toString() : ''
 }
 
-// Accept "1 234,56" style input by normalising spaces and a decimal comma.
-function normaliseAmount() {
-  if (state.value) state.value = state.value.replace(/[\s  ]/g, '').replace(',', '.')
+// French number format: comma decimals and space grouping ("1 234,56 €", "0,1 BTC"). The parser rejects a dot.
+const amountFormat = computed(() => amountFormatOptions(props.currency))
+
+/** The API takes amounts as exact decimal strings; round to the currency's minor unit (cent, satoshi) first. */
+function toDecimalString(value: number): string {
+  return minorToDecimal(Math.round(value * 10 ** decimals.value), decimals.value)
 }
+
+const balanceHelp = computed(() => (decimals.value === 2
+  ? `Total value in ${props.currency}, with a decimal comma, e.g. 1 234,56`
+  : `Total quantity in ${props.currency} (up to ${decimals.value} decimals), with a decimal comma, e.g. 0,1. Converted to EUR with the daily rate.`))
 
 async function onSubmit(event: FormSubmitEvent<Schema>) {
   saving.value = true
   try {
     const saved = props.valuation
-      ? await $fetch<ValuationDTO>(`/api/valuations/${props.valuation.id}`, { method: 'PATCH', body: event.data })
-      : await $fetch<ValuationDTO>(`/api/assets/${props.assetId}/valuations`, { method: 'POST', body: event.data })
+      ? await $fetch<ValuationDTO>(`/api/valuations/${props.valuation.id}`, { method: 'PATCH', body: { ...event.data, value: toDecimalString(event.data.value) } })
+      : await $fetch<ValuationDTO>(`/api/assets/${props.assetId}/valuations`, { method: 'POST', body: { ...event.data, value: toDecimalString(event.data.value) } })
     toast.add({ title: props.valuation ? 'Valuation updated' : 'Valuation added', color: 'success', icon: 'i-lucide-check' })
     open.value = false
     emit('saved', saved)
@@ -71,7 +83,7 @@ async function onSubmit(event: FormSubmitEvent<Schema>) {
   <UModal
     v-model:open="open"
     :title="valuation ? 'Correct valuation' : 'Add valuation'"
-    description="The total balance of the asset on that date."
+    :description="decimals === 2 ? 'The total balance of the asset on that date.' : `The ${currency} you held on that date.`"
   >
     <template #body>
       <UForm id="valuation-form" :schema="schema" :state="state" class="space-y-4" @submit="onSubmit">
@@ -85,12 +97,20 @@ async function onSubmit(event: FormSubmitEvent<Schema>) {
           />
         </UFormField>
 
-        <UFormField label="Balance" name="value" required :help="`Total value in ${currency}, e.g. 1234.56`">
-          <UInput v-model="state.value" inputmode="decimal" class="w-full" @blur="normaliseAmount">
-            <template #trailing>
-              <span class="text-xs text-muted">{{ currency }}</span>
-            </template>
-          </UInput>
+        <UFormField :label="decimals === 2 ? 'Balance' : 'Quantity'" name="value" required :help="balanceHelp">
+          <UInputNumber
+            v-model.optional="state.value"
+            locale="fr-FR"
+            :format-options="amountFormat"
+            :step="1 / 10 ** decimals"
+            :step-snapping="false"
+            :increment="false"
+            :decrement="false"
+            disable-wheel-change
+            inputmode="decimal"
+            :placeholder="decimals === 2 ? '0,00' : '0'"
+            class="w-full"
+          />
         </UFormField>
 
         <UFormField label="Source" name="source">
@@ -102,7 +122,7 @@ async function onSubmit(event: FormSubmitEvent<Schema>) {
     <template #footer>
       <div class="flex w-full justify-end gap-2">
         <UButton color="neutral" variant="outline" label="Cancel" @click="open = false" />
-        <UButton type="submit" form="valuation-form" label="Save" :loading="saving" @click="normaliseAmount" />
+        <UButton type="submit" form="valuation-form" label="Save" :loading="saving" />
       </div>
     </template>
   </UModal>

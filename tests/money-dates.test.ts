@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { MAX_ABS_MINOR, MoneyError, minorToDecimal, parseDecimalToMinor, sumMinor } from '../shared/utils/money'
+import { convertMinor, currencyDecimals, isValidRate, MAX_ABS_MINOR, MoneyError, minorToDecimal, parseDecimalToMinor, sumMinor } from '../shared/utils/money'
 import { addMonths, endOfMonth, isValidIsoDate, parisDate } from '../shared/utils/dates'
 import { valuationCreateSchema } from '../shared/utils/validation'
 
@@ -43,9 +43,11 @@ describe('money: decimal strings <-> integer minor units', () => {
   })
 
   it('validation schema converts the value to minor units', () => {
-    expect(valuationCreateSchema.parse({ date: '2024-02-29', value: '10.5' })).toEqual({ date: '2024-02-29', value: 1050, source: 'manual' })
+    // The schema checks the shape; the repository applies the asset currency's precision (see db tests).
+    expect(valuationCreateSchema.parse({ date: '2024-02-29', value: ' 10.5 ' })).toEqual({ date: '2024-02-29', value: '10.5', source: 'manual' })
     expect(valuationCreateSchema.safeParse({ date: '2024-02-29', value: 10.5 }).success).toBe(false)
-    expect(valuationCreateSchema.safeParse({ date: '2024-02-29', value: '10.555' }).success).toBe(false)
+    expect(valuationCreateSchema.safeParse({ date: '2024-02-29', value: '1e5' }).success).toBe(false)
+    expect(valuationCreateSchema.safeParse({ date: '2024-02-29', value: '1,5' }).success).toBe(false)
   })
 })
 
@@ -77,5 +79,34 @@ describe('calendar dates', () => {
     expect(addMonths('2024-01-15', -13)).toBe('2022-12-15')
     expect(endOfMonth('2024-02-10')).toBe('2024-02-29')
     expect(endOfMonth('2024-12-01')).toBe('2024-12-31')
+  })
+})
+
+describe('money: BTC (8 decimals) and conversion', () => {
+  it('parses and formats satoshis', () => {
+    expect(currencyDecimals('BTC')).toBe(8)
+    expect(currencyDecimals('EUR')).toBe(2)
+    expect(parseDecimalToMinor('0.1', 8)).toBe(10_000_000)
+    expect(parseDecimalToMinor('0.00000001', 8)).toBe(1)
+    expect(parseDecimalToMinor('9999999.99999999', 8)).toBe(MAX_ABS_MINOR)
+    expect(() => parseDecimalToMinor('0.000000001', 8)).toThrow(MoneyError)
+    expect(() => parseDecimalToMinor('10000000', 8)).toThrow(MoneyError)
+    expect(minorToDecimal(10_000_000, 8)).toBe('0.10000000')
+    expect(minorToDecimal(-1, 8)).toBe('-0.00000001')
+  })
+
+  it('converts exactly to EUR cents, rounding half away from zero', () => {
+    expect(convertMinor(10_000_000, 8, '69987.075')).toBe(699871n) // 6998.7075 -> 6998.71
+    expect(convertMinor(10_000_000, 8, '69987.07')).toBe(699871n) // 6998.707 -> 6998.71
+    expect(convertMinor(10_000_000, 8, '69987.04')).toBe(699870n) // 6998.704 -> 6998.70
+    expect(convertMinor(-10_000_000, 8, '69987.075')).toBe(-699871n)
+    expect(convertMinor(MAX_ABS_MINOR, 8, '100000')).toBe(100_000_000_000_000n) // 999 999 999 999.999 EUR, rounded up
+    expect(convertMinor(MAX_ABS_MINOR, 8, '987654.321')).toBe(987_654_320_999_999n) // exact BigInt maths
+    expect(convertMinor(12345, 2, '1')).toBe(12345n)
+  })
+
+  it('validates rates', () => {
+    for (const r of ['69987.075', '1', '0.5', '0.000000000001']) expect(isValidRate(r)).toBe(true)
+    for (const r of ['0', '0.0', '-1', '1e5', '1,5', '', '.5', '5.']) expect(isValidRate(r)).toBe(false)
   })
 })

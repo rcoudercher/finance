@@ -38,8 +38,15 @@ watch(open, (isOpen) => {
   useColor.value = !!a?.color
 }, { immediate: true })
 
-const currencyItems = SUPPORTED_CURRENCIES.map(c => ({ label: c, value: c }))
+const currencyItems = SUPPORTED_CURRENCIES.map(c => ({ label: c === 'BTC' ? 'BTC (Bitcoin)' : c, value: c }))
 const currencyLocked = computed(() => !!props.asset?.currencyLocked)
+
+// Crypto holdings are tracked in their own unit: picking the Crypto category suggests BTC.
+watch(() => state.category, (category, previous) => {
+  if (currencyLocked.value || !previous) return
+  if (category === 'crypto' && state.currency === 'EUR') state.currency = 'BTC'
+  else if (previous === 'crypto' && category !== 'crypto' && state.currency === 'BTC') state.currency = 'EUR'
+})
 
 async function onSubmit(event: FormSubmitEvent<Schema>) {
   saving.value = true
@@ -83,7 +90,7 @@ async function onSubmit(event: FormSubmitEvent<Schema>) {
           label="Currency"
           name="currency"
           required
-          :help="currencyLocked ? 'Locked because this asset already has valuations.' : 'Only EUR assets are included in totals.'"
+          :help="currencyLocked ? 'Locked because this asset already has valuations.' : 'EUR and BTC assets count in totals; BTC is converted with the daily BTC-EUR rate. Other currencies are excluded.'"
         >
           <USelect v-model="state.currency" :items="currencyItems" :disabled="currencyLocked" class="w-full" />
         </UFormField>

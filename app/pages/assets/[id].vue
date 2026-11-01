@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import type { TableColumn } from '@nuxt/ui'
-import type { AssetDetailDTO, ValuationDTO } from '#shared/types/api'
+import type { AssetDetailDTO, RateDTO, ValuationDTO } from '#shared/types/api'
 import type { IsoRange } from '~/components/DateRangeInput.vue'
 import type { ChartRow } from '~/components/HistoryChart.vue'
 import { diffDays, minDate, parisDate } from '#shared/utils/dates'
-import { assetHistory, STALE_AFTER_DAYS } from '#shared/utils/finance'
+import { assetHistory, isAggregated, latestOnOrBefore, STALE_AFTER_DAYS } from '#shared/utils/finance'
+import { CONVERTED_CURRENCIES, convertMinor, currencyDecimals, minorToDecimal, parseDecimalToMinor } from '#shared/utils/money'
 
 const route = useRoute()
 const id = computed(() => String(route.params.id))
@@ -28,8 +29,16 @@ const { data: valuations, refresh: refreshFiltered, status } = await useFetch<Va
   { query: filterQuery, default: () => [] },
 )
 
+// BTC assets: balances are in BTC; EUR values use the daily BTC-EUR rates.
+const converted = computed(() => !!asset.value && CONVERTED_CURRENCIES.includes(asset.value.currency))
+const { data: rateList, refresh: refreshRates } = await useFetch<RateDTO[]>('/api/rates', {
+  query: { currency: computed(() => asset.value?.currency) },
+  immediate: converted.value,
+  default: () => [],
+})
+
 async function refreshAllData() {
-  await Promise.all([refreshAsset(), refreshAll(), refreshFiltered()])
+  await Promise.all([refreshAsset(), refreshAll(), refreshFiltered(), converted.value ? refreshRates() : undefined])
 }
 
 const participatesFrom = computed(() => {
@@ -40,20 +49,32 @@ const participatesFrom = computed(() => {
 
 const chartRange = computed<IsoRange>(() => filter.value ?? { from: participatesFrom.value, to: today })
 
+const chartCurrency = computed(() => (converted.value ? 'EUR' : asset.value?.currency ?? 'EUR'))
+
 const chartRows = computed<ChartRow[]>(() => assetHistory(allValuations.value, {
   ...chartRange.value,
   today,
   participatesFrom: participatesFrom.value,
-}).map(p => ({
-  date: p.date,
-  values: { value: p.value },
-  notes: p.stale && p.observedOn ? [`Last observed ${formatDate(p.observedOn)} (stale)`] : [],
-})))
+}).map((p) => {
+  if (!converted.value || p.value === null) {
+    const notes = p.stale && p.observedOn ? [`Last observed ${formatDate(p.observedOn)} (stale)`] : []
+    return { date: p.date, values: { value: p.value }, notes }
+  }
+  // EUR value = BTC balance carried forward x latest rate on or before that day.
+  const currency = asset.value!.currency
+  const rate = latestOnOrBefore(rateList.value, p.date)
+  if (!rate) return { date: p.date, values: { value: null }, notes: [`${formatMoney(p.value, currency)}, no ${currency}-EUR rate yet`] }
+  const decimals = currencyDecimals(currency)
+  const eur = minorToDecimal(convertMinor(parseDecimalToMinor(p.value, decimals), decimals, rate.rate))
+  const rateNote = diffDays(p.date, rate.date) > STALE_AFTER_DAYS ? [`Rate from ${formatDate(rate.date)} (stale)`] : []
+  return { date: p.date, values: { value: eur }, notes: [`${formatMoney(p.value, currency)} × ${formatMoney(rate.rate)}`, ...rateNote] }
+}))
 
 const hasChartData = computed(() => chartRows.value.some(r => r.values.value !== null))
 const latest = computed(() => asset.value?.latestValuation ?? null)
 const latestAge = computed(() => (latest.value ? diffDays(today, latest.value.date) : null))
-const latestStale = computed(() => latestAge.value !== null && latestAge.value > STALE_AFTER_DAYS)
+// A BTC quantity stays valid until you buy or sell; for those assets only the rate can be stale.
+const latestStale = computed(() => !converted.value && latestAge.value !== null && latestAge.value > STALE_AFTER_DAYS)
 
 // Modals
 const editOpen = ref(false)
@@ -95,6 +116,28 @@ async function confirmDelete() {
   }
 }
 
+// Delete the whole asset (and all its valuations).
+const deleteAssetOpen = ref(false)
+const deleteAssetBusy = ref(false)
+
+async function confirmDeleteAsset() {
+  if (!asset.value) return
+  const name = asset.value.name
+  deleteAssetBusy.value = true
+  try {
+    await $fetch(`/api/assets/${asset.value.id}`, { method: 'DELETE' })
+    deleteAssetOpen.value = false
+    toast.add({ title: 'Asset deleted', description: `${name} and its valuations were removed.`, color: 'success', icon: 'i-lucide-check' })
+    await navigateTo('/assets')
+  }
+  catch (e) {
+    toast.add({ title: 'Could not delete asset', description: apiErrorMessage(e), color: 'error', icon: 'i-lucide-triangle-alert' })
+  }
+  finally {
+    deleteAssetBusy.value = false
+  }
+}
+
 const UButton = resolveComponent('UButton')
 const UBadge = resolveComponent('UBadge')
 
@@ -102,7 +145,7 @@ const columns = computed<TableColumn<ValuationDTO>[]>(() => [
   { accessorKey: 'date', header: 'Date', cell: ({ row }) => formatDate(row.original.date) },
   {
     accessorKey: 'value',
-    header: () => h('div', { class: 'text-right' }, 'Balance'),
+    header: () => h('div', { class: 'text-right' }, converted.value ? 'Quantity' : 'Balance'),
     cell: ({ row }) => h('div', { class: 'text-right tabular-nums' }, formatMoney(row.original.value, asset.value?.currency)),
   },
   {
@@ -133,7 +176,7 @@ const columns = computed<TableColumn<ValuationDTO>[]>(() => [
 
     <UPageBody>
       <UAlert
-        v-if="asset.currency !== 'EUR'"
+        v-if="!isAggregated(asset.currency)"
         color="info"
         variant="subtle"
         icon="i-lucide-info"
@@ -147,6 +190,14 @@ const columns = computed<TableColumn<ValuationDTO>[]>(() => [
         icon="i-lucide-clock-alert"
         title="Stale valuation"
         :description="`The latest valuation is ${latestAge} days old. Add a new one to keep totals accurate.`"
+      />
+      <UAlert
+        v-if="asset.latestEurValue?.rateStale"
+        color="warning"
+        variant="subtle"
+        icon="i-lucide-clock-alert"
+        :title="`Stale ${asset.currency}-EUR rate`"
+        :description="`The latest rate is from ${formatDate(asset.latestEurValue.rateDate)}. Check the daily rate job (~/logs/btc-rate.log).`"
       />
 
       <div class="grid gap-6 lg:grid-cols-3">
@@ -163,6 +214,17 @@ const columns = computed<TableColumn<ValuationDTO>[]>(() => [
             <p class="mt-1 text-sm text-muted">
               {{ formatDate(latest.date) }} · {{ formatAge(latestAge) }}
             </p>
+            <template v-if="converted">
+              <p v-if="asset.latestEurValue" class="mt-3 text-xl font-semibold text-highlighted tabular-nums">
+                ≈ {{ formatMoney(asset.latestEurValue.value) }}
+              </p>
+              <p v-if="asset.latestEurValue" class="text-sm text-muted">
+                at {{ formatMoney(asset.latestEurValue.rate) }} / {{ asset.currency }} on {{ formatDate(asset.latestEurValue.rateDate) }}
+              </p>
+              <p v-else class="mt-3 text-sm text-muted">
+                No {{ asset.currency }}-EUR rate yet, so the EUR value is unknown.
+              </p>
+            </template>
           </template>
           <UEmpty v-else icon="i-lucide-circle-help" title="No valuation yet" description="Value unknown until you record one." variant="naked" :actions="[{ label: 'Add valuation', icon: 'i-lucide-plus', onClick: addValuation }]" />
         </UCard>
@@ -236,7 +298,7 @@ const columns = computed<TableColumn<ValuationDTO>[]>(() => [
                 History
               </h2>
               <p class="text-sm text-muted">
-                Daily balance, carried forward from each valuation
+                {{ converted ? `Daily EUR value: ${asset.currency} held × ${asset.currency}-EUR rate` : 'Daily balance, carried forward from each valuation' }}
               </p>
             </div>
             <div class="flex items-center gap-2">
@@ -250,7 +312,7 @@ const columns = computed<TableColumn<ValuationDTO>[]>(() => [
           v-if="hasChartData"
           :rows="chartRows"
           :series="[{ key: 'value', name: asset.name, color: asset.displayColor }]"
-          :currency="asset.currency"
+          :currency="chartCurrency"
           :height="260"
           :label="`${asset.name} value over time`"
         />
@@ -272,6 +334,16 @@ const columns = computed<TableColumn<ValuationDTO>[]>(() => [
           </template>
         </UTable>
       </UCard>
+
+      <UAlert
+        color="error"
+        variant="subtle"
+        icon="i-lucide-triangle-alert"
+        title="Delete this asset"
+        :description="`Permanently removes ${asset.name} and all ${asset.valuationCount} of its valuations. Its history disappears from the dashboard and totals. This cannot be undone.`"
+        orientation="horizontal"
+        :actions="[{ label: 'Delete asset', color: 'error', icon: 'i-lucide-trash-2', onClick: () => { deleteAssetOpen = true } }]"
+      />
     </UPageBody>
 
     <AssetFormModal v-model:open="editOpen" :asset="asset" @saved="refreshAllData" />
@@ -293,6 +365,25 @@ const columns = computed<TableColumn<ValuationDTO>[]>(() => [
         <div class="flex w-full justify-end gap-2">
           <UButton color="neutral" variant="outline" label="Cancel" @click="deleting = null" />
           <UButton color="error" label="Delete" :loading="deleteBusy" @click="confirmDelete" />
+        </div>
+      </template>
+    </UModal>
+
+    <UModal v-model:open="deleteAssetOpen" :title="`Delete ${asset.name}?`" :dismissible="!deleteAssetBusy">
+      <template #body>
+        <div class="space-y-3 text-sm text-muted">
+          <p>
+            This permanently deletes the asset and
+            <strong class="text-highlighted">{{ asset.valuationCount }} {{ asset.valuationCount === 1 ? 'valuation' : 'valuations' }}</strong>.
+            It will no longer count in the dashboard totals or history, including past dates.
+          </p>
+          <p>There is no undo. The only way back is restoring a database backup.</p>
+        </div>
+      </template>
+      <template #footer>
+        <div class="flex w-full justify-end gap-2">
+          <UButton color="neutral" variant="outline" label="Cancel" :disabled="deleteAssetBusy" @click="deleteAssetOpen = false" />
+          <UButton color="error" icon="i-lucide-trash-2" label="Delete asset and valuations" :loading="deleteAssetBusy" @click="confirmDeleteAsset" />
         </div>
       </template>
     </UModal>

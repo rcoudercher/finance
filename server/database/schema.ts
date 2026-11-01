@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm'
-import { check, index, integer, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core'
+import { check, index, integer, primaryKey, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core'
 
 export const ASSET_CATEGORIES = ['bank', 'investment', 'crypto', 'real_estate', 'cash', 'other'] as const
 export const VALUATION_SOURCES = ['manual', 'import', 'api'] as const
@@ -15,7 +15,7 @@ export const assets = sqliteTable('assets', {
   updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
 }, t => [
   check('assets_category_check', sql`${t.category} in ('bank', 'investment', 'crypto', 'real_estate', 'cash', 'other')`),
-  check('assets_currency_check', sql`${t.currency} in ('EUR', 'USD', 'GBP', 'CHF', 'CAD', 'AUD')`),
+  check('assets_currency_check', sql`${t.currency} in ('EUR', 'USD', 'GBP', 'CHF', 'CAD', 'AUD', 'BTC')`),
   check('assets_name_check', sql`length(trim(${t.name})) > 0`),
 ])
 
@@ -35,7 +35,24 @@ export const valuations = sqliteTable('valuations', {
   check('valuations_value_check', sql`typeof(${t.value}) = 'integer' and abs(${t.value}) <= 999999999999999`),
 ])
 
+// Daily EUR rates used to convert non-EUR assets (BTC) for totals: 1 unit of `currency` = `rate` EUR on `date`.
+// Stored as an exact decimal string. One rate per currency per day.
+export const rates = sqliteTable('rates', {
+  currency: text('currency').notNull(),
+  date: text('date').notNull(), // YYYY-MM-DD
+  rate: text('rate').notNull(), // decimal string, EUR per unit, e.g. "69987.075"
+  source: text('source').notNull(), // e.g. "coinbase:spot", "coinbase:daily-close"
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+  updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
+}, t => [
+  primaryKey({ columns: [t.currency, t.date] }),
+  check('rates_currency_check', sql`${t.currency} in ('BTC')`),
+  check('rates_date_check', sql`${t.date} glob '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'`),
+  check('rates_rate_check', sql`${t.rate} glob '[0-9]*' and ${t.rate} not glob '*[^0-9.]*'`),
+])
+
 export type Asset = typeof assets.$inferSelect
 export type NewAsset = typeof assets.$inferInsert
 export type Valuation = typeof valuations.$inferSelect
 export type NewValuation = typeof valuations.$inferInsert
+export type Rate = typeof rates.$inferSelect

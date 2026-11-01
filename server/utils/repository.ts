@@ -1,12 +1,14 @@
 import { randomUUID } from 'node:crypto'
-import { and, asc, count, desc, eq, gte, lte } from 'drizzle-orm'
+import { and, asc, count, desc, eq, gte, lte, sql } from 'drizzle-orm'
 import { z } from 'zod'
 import type { DB } from '../database/client'
-import { assets, valuations, type Asset, type Valuation } from '../database/schema'
-import { minorToDecimal } from '../../shared/utils/money'
+import { assets, rates, valuations, type Asset, type Valuation } from '../database/schema'
+import { CONVERTED_CURRENCIES, convertMinor, currencyDecimals, minorToDecimal, MoneyError, parseDecimalToMinor } from '../../shared/utils/money'
 import { parisDate } from '../../shared/utils/dates'
-import { computeDashboard, RangeError400, resolveColors, type RangePreset } from '../../shared/utils/finance'
-import { assetCreateSchema, assetUpdateSchema, valuationCreateSchema, valuationUpdateSchema } from '../../shared/utils/validation'
+import { isUlid, ulid } from '../../shared/utils/ulid'
+import { computeDashboard, RangeError400, resolveColors, STALE_AFTER_DAYS, type RangePreset } from '../../shared/utils/finance'
+import { diffDays } from '../../shared/utils/dates'
+import { assetCreateSchema, assetUpdateSchema, ratesUpsertSchema, valuationCreateSchema, valuationUpdateSchema } from '../../shared/utils/validation'
 
 // Domain errors mapped to HTTP status codes by the route handlers.
 export class DomainError extends Error {
@@ -31,12 +33,13 @@ export function serializeAsset(a: Asset, valuationCount: number, color: string) 
   }
 }
 
-export function serializeValuation(v: Valuation) {
+/** `currency` is the asset's currency; it sets the decimals of `value` (2 for fiat, 8 for BTC). */
+export function serializeValuation(v: Valuation, currency: string) {
   return {
     id: v.id,
     assetId: v.assetId,
     date: v.date,
-    value: minorToDecimal(v.value),
+    value: minorToDecimal(v.value, currencyDecimals(currency)),
     source: v.source,
     createdAt: v.createdAt.toISOString(),
     updatedAt: v.updatedAt.toISOString(),
@@ -56,18 +59,39 @@ function colorsFor(db: DB) {
   return resolveColors(all)
 }
 
+/**
+ * Current EUR value of a converted asset (BTC): latest balance x latest rate, both on or before today.
+ * Null for EUR and other currencies, or when there is no balance or rate yet.
+ */
+function latestEurValue(db: DB, a: Asset, latest: Valuation | undefined, today: string) {
+  if (!latest || !CONVERTED_CURRENCIES.includes(a.currency)) return null
+  const rate = db.select().from(rates)
+    .where(and(eq(rates.currency, a.currency), lte(rates.date, today)))
+    .orderBy(desc(rates.date)).limit(1).get()
+  if (!rate) return null
+  return {
+    value: minorToDecimal(convertMinor(latest.value, currencyDecimals(a.currency), rate.rate)),
+    rate: rate.rate,
+    rateDate: rate.date,
+    rateStale: diffDays(today, rate.date) > STALE_AFTER_DAYS,
+  }
+}
+
+function withLatest(db: DB, a: Asset, valuationCount: number, color: string, today: string) {
+  const latest = latestValuation(db, a.id, today)
+  return {
+    ...serializeAsset(a, valuationCount, color),
+    latestValuation: latest ? serializeValuation(latest, a.currency) : null,
+    latestEurValue: latestEurValue(db, a, latest, today),
+  }
+}
+
 export function listAssets(db: DB) {
   const rows = db.select().from(assets).orderBy(asc(assets.createdAt), asc(assets.id)).all()
   const counts = valuationCounts(db)
   const colors = resolveColors(rows)
   const today = parisDate()
-  return rows.map((a) => {
-    const latest = latestValuation(db, a.id, today)
-    return {
-      ...serializeAsset(a, counts.get(a.id) ?? 0, colors.get(a.id)!),
-      latestValuation: latest ? serializeValuation(latest) : null,
-    }
-  })
+  return rows.map(a => withLatest(db, a, counts.get(a.id) ?? 0, colors.get(a.id)!, today))
 }
 
 function latestValuation(db: DB, assetId: string, today: string) {
@@ -77,6 +101,7 @@ function latestValuation(db: DB, assetId: string, today: string) {
 }
 
 function findAsset(db: DB, id: string): Asset {
+  if (!isUlid(id)) throw new DomainError(404, 'Asset not found')
   const row = db.select().from(assets).where(eq(assets.id, id)).get()
   if (!row) throw new DomainError(404, 'Asset not found')
   return row
@@ -88,15 +113,11 @@ function countValuations(db: DB, assetId: string): number {
 
 export function getAsset(db: DB, id: string) {
   const a = findAsset(db, id)
-  const latest = latestValuation(db, id, parisDate())
-  return {
-    ...serializeAsset(a, countValuations(db, id), colorsFor(db).get(id)!),
-    latestValuation: latest ? serializeValuation(latest) : null,
-  }
+  return withLatest(db, a, countValuations(db, id), colorsFor(db).get(id)!, parisDate())
 }
 
 export function createAsset(db: DB, input: z.output<typeof assetCreateSchema>, now = new Date()) {
-  const row: Asset = { id: randomUUID(), ...input, createdAt: now, updatedAt: now }
+  const row: Asset = { id: ulid(now), ...input, createdAt: now, updatedAt: now }
   db.insert(assets).values(row).run()
   return getAsset(db, row.id)
 }
@@ -113,12 +134,33 @@ export function updateAsset(db: DB, id: string, input: z.output<typeof assetUpda
   })
 }
 
+/** Permanently delete an asset and all of its valuations in one transaction. Returns how many valuations were removed. */
+export function deleteAsset(db: DB, id: string): { valuationsDeleted: number } {
+  return db.transaction((tx) => {
+    findAsset(tx as unknown as DB, id)
+    const removed = tx.delete(valuations).where(eq(valuations.assetId, id)).run()
+    tx.delete(assets).where(eq(assets.id, id)).run()
+    return { valuationsDeleted: removed.changes }
+  })
+}
+
 export function listValuations(db: DB, assetId: string, range: { from?: string, to?: string }) {
-  findAsset(db, assetId)
+  const asset = findAsset(db, assetId)
   const conds = [eq(valuations.assetId, assetId)]
   if (range.from) conds.push(gte(valuations.date, range.from))
   if (range.to) conds.push(lte(valuations.date, range.to))
-  return db.select().from(valuations).where(and(...conds)).orderBy(desc(valuations.date)).all().map(serializeValuation)
+  return db.select().from(valuations).where(and(...conds)).orderBy(desc(valuations.date)).all().map(v => serializeValuation(v, asset.currency))
+}
+
+/** Decimal string -> minor units with the currency's precision (2 decimals for fiat, 8 for BTC). */
+function toMinor(value: string, currency: string): number {
+  try {
+    return parseDecimalToMinor(value, currencyDecimals(currency))
+  }
+  catch (e) {
+    if (e instanceof MoneyError) throw new DomainError(400, `${currency} amount: ${e.message}`)
+    throw e
+  }
 }
 
 function assertNotFuture(date: string) {
@@ -147,20 +189,23 @@ function wrapUnique<T>(fn: () => T): T {
 
 export function createValuation(db: DB, assetId: string, input: z.output<typeof valuationCreateSchema>) {
   assertNotFuture(input.date)
-  findAsset(db, assetId)
+  const asset = findAsset(db, assetId)
   const now = new Date()
-  const row: Valuation = { id: randomUUID(), assetId, ...input, createdAt: now, updatedAt: now }
+  const row: Valuation = { id: randomUUID(), assetId, ...input, value: toMinor(input.value, asset.currency), createdAt: now, updatedAt: now }
   wrapUnique(() => db.insert(valuations).values(row).run())
-  return serializeValuation(row)
+  return serializeValuation(row, asset.currency)
 }
 
 export function updateValuation(db: DB, id: string, input: z.output<typeof valuationUpdateSchema>) {
   const current = db.select().from(valuations).where(eq(valuations.id, id)).get()
   if (!current) throw new DomainError(404, 'Valuation not found')
   if (input.date) assertNotFuture(input.date)
-  const patch = Object.fromEntries(Object.entries(input).filter(([, v]) => v !== undefined))
+  const asset = findAsset(db, current.assetId)
+  const { value, ...rest } = input
+  const patch: Partial<Valuation> = Object.fromEntries(Object.entries(rest).filter(([, v]) => v !== undefined))
+  if (value !== undefined) patch.value = toMinor(value, asset.currency)
   wrapUnique(() => db.update(valuations).set({ ...patch, updatedAt: new Date() }).where(eq(valuations.id, id)).run())
-  return serializeValuation(db.select().from(valuations).where(eq(valuations.id, id)).get()!)
+  return serializeValuation(db.select().from(valuations).where(eq(valuations.id, id)).get()!, asset.currency)
 }
 
 export function deleteValuation(db: DB, id: string) {
@@ -172,11 +217,40 @@ export function dashboard(db: DB, q: { range?: RangePreset, from?: string, to?: 
   const allAssets = db.select().from(assets).all()
   const allValuations = db.select({ id: valuations.id, assetId: valuations.assetId, date: valuations.date, value: valuations.value })
     .from(valuations).all()
+  const allRates = db.select({ currency: rates.currency, date: rates.date, rate: rates.rate }).from(rates).all()
   try {
-    return computeDashboard(allAssets, allValuations, { today, preset: q.range ?? null, from: q.from, to: q.to })
+    return computeDashboard(allAssets, allValuations, { today, preset: q.range ?? null, from: q.from, to: q.to, rates: allRates })
   }
   catch (e) {
     if (e instanceof RangeError400) throw new DomainError(400, e.message)
     throw e
   }
+}
+
+export function listRates(db: DB, q: { currency: string, from?: string, to?: string }) {
+  const conds = [eq(rates.currency, q.currency)]
+  if (q.from) conds.push(gte(rates.date, q.from))
+  if (q.to) conds.push(lte(rates.date, q.to))
+  return db.select({ date: rates.date, rate: rates.rate, source: rates.source }).from(rates)
+    .where(and(...conds)).orderBy(asc(rates.date)).all()
+}
+
+/** Insert or replace daily rates for one currency. Future dates are rejected. */
+export function upsertRates(db: DB, input: z.output<typeof ratesUpsertSchema>, now = new Date()) {
+  const today = parisDate(now)
+  for (const r of input.rates) {
+    if (r.date > today) throw new DomainError(400, `Rate date ${r.date} is in the future`)
+  }
+  return db.transaction((tx) => {
+    for (const r of input.rates) {
+      tx.insert(rates)
+        .values({ currency: input.currency, date: r.date, rate: r.rate, source: input.source, createdAt: now, updatedAt: now })
+        .onConflictDoUpdate({
+          target: [rates.currency, rates.date],
+          set: { rate: sql`excluded.rate`, source: sql`excluded.source`, updatedAt: now },
+        })
+        .run()
+    }
+    return { currency: input.currency, upserted: input.rates.length }
+  })
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { assetHistory, computeDashboard, type AssetInput, type ValuationInput } from '../shared/utils/finance'
+import { assetHistory, computeDashboard, type AssetInput, type RateInput, type ValuationInput } from '../shared/utils/finance'
 
 // Noon UTC is the same calendar day in Paris, so creation dates are unambiguous.
 const at = (date: string) => new Date(`${date}T12:00:00Z`)
@@ -79,7 +79,7 @@ describe('daily history (carry forward)', () => {
     expect(d.excluded.map(e => e.currency).sort()).toEqual(['GBP', 'USD'])
     expect(d.series.map(s => s.id)).toEqual(['eur'])
     expect(Object.keys(byDate(d, today).values)).toEqual(['eur'])
-    expect(d.assets.find(a => a.id === 'usd')).toMatchObject({ included: false, latestValue: '50.00' })
+    expect(d.assets.find(a => a.id === 'usd')).toMatchObject({ included: false, latestValue: null, latestNativeValue: '50.00' })
   })
 
   it('flags observations older than 30 days as stale but keeps them in totals', () => {
@@ -120,5 +120,63 @@ describe('single-asset history', () => {
       { from: '2024-03-01', to: '2024-03-10', today: '2024-03-05', participatesFrom: '2024-03-02' },
     )
     expect(h.map(p => p.value)).toEqual([null, '1.00', '1.00', '2.00', '2.00'])
+  })
+})
+
+describe('BTC assets (balances in BTC, converted to EUR with daily rates)', () => {
+  const today = '2024-03-10'
+  const rate = (date: string, r: string): RateInput => ({ currency: 'BTC', date, rate: r })
+  // 0.1 BTC = 10 000 000 satoshis
+  const btc = () => asset('btc', '2024-03-01', 'BTC')
+
+  it('values each day as the carried-forward balance times the latest rate on or before that day', () => {
+    const d = computeDashboard([btc(), asset('eur', '2024-03-01')], [
+      val('btc', '2024-03-02', 10_000_000),
+      val('btc', '2024-03-06', 20_000_000),
+      val('eur', '2024-03-01', 100_00),
+    ], { today, from: '2024-03-01', to: today, rates: [rate('2024-03-03', '60000'), rate('2024-03-05', '69987.075')] })
+
+    expect(byDate(d, '2024-03-02').values.btc).toBeNull() // balance known, no rate yet: unknown, not zero
+    expect(byDate(d, '2024-03-02').complete).toBe(false)
+    expect(byDate(d, '2024-03-03').values.btc).toBe('6000.00')
+    expect(byDate(d, '2024-03-04').values.btc).toBe('6000.00') // rate carried forward
+    expect(byDate(d, '2024-03-05').values.btc).toBe('6998.71') // 0.1 x 69987.075 = 6998.7075, rounded
+    expect(byDate(d, '2024-03-06').values.btc).toBe('13997.42') // new balance, same rate
+    expect(byDate(d, '2024-03-06').total).toBe('14097.42')
+
+    expect(d.current.total).toBe('14097.42')
+    expect(d.series.map(s => s.id)).toContain('btc')
+    expect(d.excluded).toEqual([])
+    expect(d.assets.find(a => a.id === 'btc')).toMatchObject({
+      included: true,
+      latestValue: '13997.42',
+      latestNativeValue: '0.20000000',
+      latestRate: { rate: '69987.075', date: '2024-03-05' },
+    })
+  })
+
+  it('reports a BTC asset as unknown until a rate exists, and ignores future rates', () => {
+    const d = computeDashboard([btc()], [val('btc', '2024-03-02', 10_000_000)], {
+      today, preset: '1M', rates: [rate('2024-03-20', '70000')],
+    })
+    expect(d.current).toMatchObject({ total: null, participating: 1, known: 0, unknownAssetIds: ['btc'] })
+    expect(d.assets[0]).toMatchObject({ latestValue: null, latestNativeValue: '0.10000000', latestRate: null })
+  })
+
+  it('never flags an old BTC quantity as stale while the rate is fresh', () => {
+    const d = computeDashboard([btc()], [val('btc', '2023-01-01', 10_000_000)], {
+      today, preset: '1M', rates: [rate('2024-03-10', '60000')],
+    })
+    expect(d.current.staleAssetIds).toEqual([])
+    expect(d.assets[0]).toMatchObject({ stale: false, latestValue: '6000.00' })
+    expect(byDate(d, today).stale).toBe(0)
+  })
+
+  it('flags a stale rate even when the balance is recent', () => {
+    const d = computeDashboard([btc()], [val('btc', '2024-03-09', 10_000_000)], {
+      today: '2024-04-20', preset: '1M', rates: [rate('2024-03-01', '50000')],
+    })
+    expect(d.current.staleAssetIds).toEqual(['btc'])
+    expect(d.current.total).toBe('5000.00')
   })
 })

@@ -91,8 +91,8 @@ const warnings = computed(() => {
   const list: { title: string, description: string, color: 'warning' | 'info', icon: string }[] = []
   if (v.current.unknownAssetIds.length) {
     list.push({
-      title: 'Missing valuations',
-      description: `No valuation yet for ${v.current.unknownAssetIds.map(assetName).join(', ')}. The total only includes assets with a known value.`,
+      title: 'Unknown values',
+      description: `No known EUR value yet for ${v.current.unknownAssetIds.map(assetName).join(', ')} (no valuation, or no BTC-EUR rate yet). The total only includes assets with a known value.`,
       color: 'warning',
       icon: 'i-lucide-circle-help',
     })
@@ -108,7 +108,7 @@ const warnings = computed(() => {
   if (v.excluded.length) {
     list.push({
       title: 'Excluded currencies',
-      description: `Only EUR assets are aggregated. Not included: ${v.excluded.map(e => `${e.name} (${e.currency})`).join(', ')}.`,
+      description: `Only EUR and BTC assets are aggregated. Not included: ${v.excluded.map(e => `${e.name} (${e.currency})`).join(', ')}.`,
       color: 'info',
       icon: 'i-lucide-info',
     })
@@ -126,7 +126,7 @@ const warnings = computed(() => {
 
 const description = computed(() => {
   const v = view.value
-  if (!v) return 'Net worth across your EUR assets'
+  if (!v) return 'Net worth across your EUR and BTC assets'
   const total = v.current.total === null ? 'unknown' : formatMoney(v.current.total)
   return `Current EUR total ${total} · as of ${formatDate(v.today)}${v.current.complete ? '' : ' (partial)'}`
 })
@@ -199,7 +199,7 @@ const description = computed(() => {
               Allocation
             </h2>
             <p class="text-sm text-muted">
-              Current value of EUR assets
+              Current EUR value of each asset (BTC converted)
             </p>
           </template>
 

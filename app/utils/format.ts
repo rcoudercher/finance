@@ -1,4 +1,6 @@
-// European formatting: money as "1 234,56 €" (fr-FR), dates as "31 Oct 2026" / "31/10/2026" (en-GB).
+// European formatting: money as "1 234,56 €" or "0,1 BTC" (fr-FR), dates as "31 Oct 2026" / "31/10/2026" (en-GB).
+
+import { CRYPTO_CURRENCIES } from '#shared/utils/money'
 
 const moneyFormatters = new Map<string, Intl.NumberFormat>()
 const compactFormatters = new Map<string, Intl.NumberFormat>()
@@ -8,9 +10,18 @@ type NumericInput = number | bigint | `${number}`
 export function formatMoney(value: string | number | null | undefined, currency = 'EUR'): string {
   if (value === null || value === undefined || value === '') return '—'
   let f = moneyFormatters.get(currency)
-  if (!f) moneyFormatters.set(currency, (f = new Intl.NumberFormat('fr-FR', { style: 'currency', currency })))
+  if (!f) moneyFormatters.set(currency, (f = new Intl.NumberFormat('fr-FR', amountFormatOptions(currency))))
   // Intl formats decimal strings exactly, without going through floating point.
   return f.format(value as NumericInput)
+}
+
+const isCrypto = (currency: string) => (CRYPTO_CURRENCIES as readonly string[]).includes(currency)
+
+/** Intl options for an amount: 2 decimals for fiat, up to 8 significant decimals for BTC ("0,1 BTC"). */
+export function amountFormatOptions(currency: string): Intl.NumberFormatOptions {
+  return isCrypto(currency)
+    ? { style: 'currency', currency, minimumFractionDigits: 0, maximumFractionDigits: 8 }
+    : { style: 'currency', currency, minimumFractionDigits: 2, maximumFractionDigits: 2 }
 }
 
 export function formatMoneyCompact(value: number, currency = 'EUR'): string {

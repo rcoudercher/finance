@@ -3,6 +3,7 @@ import type { TableColumn } from '@nuxt/ui'
 import type { AssetDetailDTO } from '#shared/types/api'
 import { diffDays, parisDate } from '#shared/utils/dates'
 import { STALE_AFTER_DAYS } from '#shared/utils/finance'
+import { CONVERTED_CURRENCIES } from '#shared/utils/money'
 
 useHead({ title: 'Assets · Finance' })
 
@@ -35,8 +36,15 @@ const columns: TableColumn<AssetDetailDTO>[] = [
   {
     id: 'latest',
     header: () => h('div', { class: 'text-right' }, 'Latest value'),
-    cell: ({ row }) => h('div', { class: 'text-right tabular-nums' },
-      formatMoney(row.original.latestValuation?.value, row.original.currency)),
+    cell: ({ row }) => {
+      const native = formatMoney(row.original.latestValuation?.value, row.original.currency)
+      const eur = row.original.latestEurValue
+      if (!eur) return h('div', { class: 'text-right tabular-nums' }, native)
+      return h('div', { class: 'text-right tabular-nums' }, [
+        h('div', native),
+        h('div', { class: 'text-xs text-muted' }, `≈ ${formatMoney(eur.value)}`),
+      ])
+    },
   },
   {
     id: 'date',
@@ -46,7 +54,10 @@ const columns: TableColumn<AssetDetailDTO>[] = [
       if (!date) return h(UBadge, { color: 'warning', variant: 'subtle', label: 'No valuation' })
       return h('div', { class: 'flex items-center gap-2' }, [
         formatDate(date),
-        isStale(date) ? h(UBadge, { color: 'warning', variant: 'subtle', label: 'Stale' }) : null,
+        // BTC quantities don't go stale; only their BTC-EUR rate can.
+        (CONVERTED_CURRENCIES.includes(row.original.currency) ? !!row.original.latestEurValue?.rateStale : isStale(date))
+          ? h(UBadge, { color: 'warning', variant: 'subtle', label: 'Stale' })
+          : null,
       ])
     },
   },

@@ -28,7 +28,18 @@ export interface AssetDTO {
 }
 
 export interface AssetDetailDTO extends AssetDTO {
+  /** Latest balance in the asset's own currency (8 decimals for BTC). */
   latestValuation: ValuationDTO | null
+  /** For BTC assets: latest balance x latest BTC-EUR rate. Null for EUR/other currencies or without a rate. */
+  latestEurValue: { value: string, rate: string, rateDate: string, rateStale: boolean } | null
+}
+
+export interface RateDTO {
+  date: string
+  /** EUR per unit, exact decimal string. */
+  rate: string
+  source: string
 }
 
 export type { DashboardResult as DashboardDTO } from '../utils/finance'
+

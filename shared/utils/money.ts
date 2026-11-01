@@ -1,30 +1,48 @@
-// Exact money handling in integer minor units (cents).
-// All supported currencies have 2 decimal places.
+// Exact amounts in integer minor units: cents for fiat currencies, satoshis (8 decimals) for BTC.
 
-export const SUPPORTED_CURRENCIES = ['EUR', 'USD', 'GBP', 'CHF', 'CAD', 'AUD'] as const
+export const SUPPORTED_CURRENCIES = ['EUR', 'USD', 'GBP', 'CHF', 'CAD', 'AUD', 'BTC'] as const
 export type Currency = (typeof SUPPORTED_CURRENCIES)[number]
 export const AGGREGATION_CURRENCY: Currency = 'EUR'
 
-/** Largest absolute value accepted for a single valuation: 9 999 999 999 999.99 (just under 10^15 minor units). */
+/** Crypto units. Their balances are stored in the unit itself and converted to EUR with daily rates. */
+export const CRYPTO_CURRENCIES = ['BTC'] as const satisfies readonly Currency[]
+/** Currencies converted to EUR for totals, using the stored daily rates. */
+export const CONVERTED_CURRENCIES: readonly string[] = CRYPTO_CURRENCIES
+
+const DECIMALS: Record<Currency, number> = { EUR: 2, USD: 2, GBP: 2, CHF: 2, CAD: 2, AUD: 2, BTC: 8 }
+
+/** Number of decimal places stored for a currency (2 for fiat, 8 for BTC). */
+export function currencyDecimals(currency: string): number {
+  return DECIMALS[currency as Currency] ?? 2
+}
+
+/** Largest absolute minor-unit value: just under 10^15 (9 999 999 999 999.99 EUR, 9 999 999.99999999 BTC). */
 export const MAX_ABS_MINOR = 999_999_999_999_999
 export const MAX_ABS_MINOR_BIG = BigInt(MAX_ABS_MINOR)
 
-const DECIMAL_RE = /^(-)?(\d{1,13})(?:\.(\d{1,2}))?$/
+const decimalRes = new Map<number, RegExp>()
+function decimalRe(decimals: number): RegExp {
+  let re = decimalRes.get(decimals)
+  if (!re) decimalRes.set(decimals, (re = new RegExp(`^(-)?(\\d{1,${15 - decimals}})(?:\\.(\\d{1,${decimals}}))?$`)))
+  return re
+}
 
 export class MoneyError extends Error {}
 
 /**
  * Parse a decimal string such as "1234.5", "-0.07" or "100" into integer minor units.
- * Rejects more than two decimal places, exponents, separators, and out-of-range values.
+ * Rejects more than `decimals` decimal places (2 by default), exponents, separators, and out-of-range values.
  */
-export function parseDecimalToMinor(input: string): number {
+export function parseDecimalToMinor(input: string, decimals = 2): number {
   const value = input.trim()
-  const match = DECIMAL_RE.exec(value)
+  const match = decimalRe(decimals).exec(value)
   if (!match) {
-    throw new MoneyError('Amount must be a decimal number with at most two decimal places, e.g. 1234.56')
+    throw new MoneyError(decimals === 2
+      ? 'Amount must be a decimal number with at most two decimal places, e.g. 1234.56'
+      : `Amount must be a decimal number with at most ${decimals} decimal places`)
   }
   const [, sign, whole, frac = ''] = match
-  const minor = BigInt(whole!) * 100n + BigInt(frac.padEnd(2, '0'))
+  const minor = BigInt(whole!) * 10n ** BigInt(decimals) + BigInt(frac.padEnd(decimals, '0'))
   if (minor > MAX_ABS_MINOR_BIG) {
     throw new MoneyError('Amount is out of range')
   }
@@ -34,13 +52,36 @@ export function parseDecimalToMinor(input: string): number {
 }
 
 /** Format integer minor units (number or bigint) as an exact decimal string, e.g. 123456 -> "1234.56". */
-export function minorToDecimal(minor: number | bigint): string {
+export function minorToDecimal(minor: number | bigint, decimals = 2): string {
   const big = typeof minor === 'bigint' ? minor : toBigIntChecked(minor)
   const negative = big < 0n
   const abs = negative ? -big : big
-  const whole = abs / 100n
-  const frac = (abs % 100n).toString().padStart(2, '0')
+  const unit = 10n ** BigInt(decimals)
+  const whole = abs / unit
+  const frac = (abs % unit).toString().padStart(decimals, '0')
   return `${negative ? '-' : ''}${whole}.${frac}`
+}
+
+const RATE_RE = /^\d{1,12}(?:\.\d{1,12})?$/
+
+/** A positive exchange rate as a decimal string, e.g. "69987.075" (EUR per unit). */
+export function isValidRate(rate: string): boolean {
+  return RATE_RE.test(rate) && /[1-9]/.test(rate)
+}
+
+/**
+ * Convert `minor` units of a currency with `decimals` decimals into EUR cents at `rate` (EUR per unit),
+ * exactly, rounding half away from zero. 10_000_000 sats (0.1 BTC) at "69987.075" -> 699871n cents.
+ */
+export function convertMinor(minor: number, decimals: number, rate: string): bigint {
+  const [whole, frac = ''] = rate.split('.')
+  const rateUnits = BigInt(whole! + frac)
+  const product = toBigIntChecked(minor) * rateUnits * 100n
+  const divisor = 10n ** BigInt(decimals + frac.length)
+  const negative = product < 0n
+  const abs = negative ? -product : product
+  const rounded = (abs + divisor / 2n) / divisor
+  return negative ? -rounded : rounded
 }
 
 export function toBigIntChecked(minor: number): bigint {

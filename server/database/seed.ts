@@ -1,5 +1,5 @@
 // Deterministic demo data. Run explicitly with `pnpm db:seed`; never runs automatically.
-// Idempotent: fixed IDs + ON CONFLICT DO NOTHING, so reruns add nothing and never overwrite
+// Idempotent: fixed IDs (ULIDs for assets) + ON CONFLICT DO NOTHING, so reruns add nothing and never overwrite
 // existing or user-edited rows.
 
 import type { DB } from './client'
@@ -8,8 +8,20 @@ import { addMonths, endOfMonth, minDate, parisDate } from '../../shared/utils/da
 
 export const SEED_MONTHS = 61 // the past five years, both endpoints included
 
+/** Fixed ULIDs for the demo assets, keyed by the slug IDs they had before assets switched to ULIDs. */
+export const DEMO_ASSET_IDS = {
+  'demo-checking': '01fk9tan00q4q9spd2afb1xnvk',
+  'demo-livret-a': '01fk9tan002crz9s0mxx182fc0',
+  'demo-pea': '01fk9tan00kbvyegptn3yvfeyt',
+  'demo-bitcoin': '01fk9tan00tp8rm0xbt4zkb402',
+  'demo-apartment': '01fk9tan00jp53qj7x2sxa4hh1',
+  'demo-cash': '01fk9tan003attm731f5w42fyk',
+} as const satisfies Record<string, string>
+
 interface DemoAsset {
   id: string
+  /** Former asset ID; still used as the prefix of the fixed demo valuation IDs. */
+  slug: string
   name: string
   category: NewAsset['category']
   description: string
@@ -39,7 +51,8 @@ function demoAssets(): DemoAsset[] {
   let apartment = 265_000
   return [
     {
-      id: 'demo-checking',
+      id: DEMO_ASSET_IDS['demo-checking'],
+      slug: 'demo-checking',
       name: '[Demo] Checking account',
       category: 'bank',
       description: 'Demo data: everyday current account.',
@@ -47,7 +60,8 @@ function demoAssets(): DemoAsset[] {
       value: (i, r) => cents(2_400 + 900 * Math.sin(i / 2.3) + (r() - 0.5) * 1_400),
     },
     {
-      id: 'demo-livret-a',
+      id: DEMO_ASSET_IDS['demo-livret-a'],
+      slug: 'demo-livret-a',
       name: '[Demo] Livret A savings',
       category: 'bank',
       description: 'Demo data: regulated savings account (ceiling 22 950 €).',
@@ -58,7 +72,8 @@ function demoAssets(): DemoAsset[] {
       },
     },
     {
-      id: 'demo-pea',
+      id: DEMO_ASSET_IDS['demo-pea'],
+      slug: 'demo-pea',
       name: '[Demo] PEA investments',
       category: 'investment',
       description: 'Demo data: equity savings plan with monthly contributions.',
@@ -69,7 +84,8 @@ function demoAssets(): DemoAsset[] {
       },
     },
     {
-      id: 'demo-bitcoin',
+      id: DEMO_ASSET_IDS['demo-bitcoin'],
+      slug: 'demo-bitcoin',
       name: '[Demo] Bitcoin',
       category: 'crypto',
       description: 'Demo data: 0.12 BTC held on an exchange.',
@@ -80,7 +96,8 @@ function demoAssets(): DemoAsset[] {
       },
     },
     {
-      id: 'demo-apartment',
+      id: DEMO_ASSET_IDS['demo-apartment'],
+      slug: 'demo-apartment',
       name: '[Demo] Apartment',
       category: 'real_estate',
       description: 'Demo data: estimated market value of a flat.',
@@ -91,7 +108,8 @@ function demoAssets(): DemoAsset[] {
       },
     },
     {
-      id: 'demo-cash',
+      id: DEMO_ASSET_IDS['demo-cash'],
+      slug: 'demo-cash',
       name: '[Demo] Cash reserve',
       category: 'cash',
       description: 'Demo data: physical cash at home.',
@@ -125,7 +143,7 @@ export function buildSeed(today: string, now: Date) {
       const value = a.value(i, rand)
       if (!Number.isSafeInteger(value)) throw new Error(`Seed produced a non-integer amount for ${a.id}`)
       valuationRows.push({
-        id: `${a.id}-${date}`, assetId: a.id, date, value, source: 'import', createdAt: now, updatedAt: now,
+        id: `${a.slug}-${date}`, assetId: a.id, date, value, source: 'import', createdAt: now, updatedAt: now,
       })
     })
   })

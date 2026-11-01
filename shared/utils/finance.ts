@@ -6,10 +6,12 @@
 //   Observations dated after D (and after "today") are never used.
 // - An asset participates from min(creation date, earliest observation date). On a participating day
 //   with no observation yet, its value is unknown (null), never zero.
-// - Only EUR assets are aggregated; other currencies are reported as excluded.
-// - Observations older than STALE_AFTER_DAYS on day D are flagged stale but still counted.
+// - EUR assets are aggregated as is. BTC assets hold BTC balances; each day's EUR value is the BTC balance
+//   times the latest BTC-EUR rate on or before that day. No rate yet = unknown. Other currencies are excluded.
+// - Observations older than STALE_AFTER_DAYS on day D are flagged stale but still counted. For BTC assets the
+//   balance is a quantity that only changes when you buy or sell, so only the rate's age counts.
 
-import { AGGREGATION_CURRENCY, minorToDecimal } from './money'
+import { AGGREGATION_CURRENCY, CONVERTED_CURRENCIES, convertMinor, currencyDecimals, minorToDecimal } from './money'
 import { addDays, addMonths, diffDays, minDate, parisDate } from './dates'
 
 export const STALE_AFTER_DAYS = 30
@@ -38,6 +40,12 @@ export interface ValuationInput {
   value: number // minor units
 }
 
+export interface RateInput {
+  currency: string
+  date: string
+  rate: string // EUR per unit, decimal string
+}
+
 export interface AssetSummary {
   id: string
   name: string
@@ -46,7 +54,12 @@ export interface AssetSummary {
   color: string
   included: boolean
   participatesFrom: string
+  /** Current EUR value (converted for BTC), or null when unknown. */
   latestValue: string | null
+  /** Latest balance in the asset's own currency (e.g. "0.10000000" BTC). */
+  latestNativeValue: string | null
+  /** Rate used for latestValue when the asset is converted, e.g. BTC. */
+  latestRate: { rate: string, date: string } | null
   latestDate: string | null
   ageDays: number | null
   stale: boolean
@@ -118,6 +131,62 @@ function indexValuations(valuations: ValuationInput[], today: string): Map<strin
   return byAsset
 }
 
+/** Group rates per currency, sorted by date, dropping any dated after `today`. */
+function indexRates(rates: RateInput[], today: string): Map<string, RateInput[]> {
+  const byCurrency = new Map<string, RateInput[]>()
+  for (const r of rates) {
+    if (r.date > today) continue
+    let list = byCurrency.get(r.currency)
+    if (!list) byCurrency.set(r.currency, (list = []))
+    list.push(r)
+  }
+  for (const list of byCurrency.values()) list.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0))
+  return byCurrency
+}
+
+/** Latest item dated on or before `day` in a date-sorted list (binary search). */
+export function latestOnOrBefore<T extends { date: string }>(list: T[] | undefined, day: string): T | null {
+  if (!list) return null
+  let lo = 0
+  let hi = list.length - 1
+  let found: T | null = null
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1
+    if (list[mid]!.date <= day) {
+      found = list[mid]!
+      lo = mid + 1
+    }
+    else hi = mid - 1
+  }
+  return found
+}
+
+export function isAggregated(currency: string): boolean {
+  return currency === AGGREGATION_CURRENCY || CONVERTED_CURRENCIES.includes(currency)
+}
+
+/**
+ * EUR value in cents of an observation on `day`, or null when it cannot be known (no rate yet).
+ * `stale` is true when the EUR balance (EUR assets) or the rate (BTC assets) is older than STALE_AFTER_DAYS.
+ */
+export function eurValueOn(
+  currency: string,
+  obs: { date: string, value: number },
+  day: string,
+  ratesByCurrency: Map<string, RateInput[]>,
+): { cents: bigint, stale: boolean, rate: RateInput | null } | null {
+  if (currency === AGGREGATION_CURRENCY) {
+    return { cents: BigInt(obs.value), stale: diffDays(day, obs.date) > STALE_AFTER_DAYS, rate: null }
+  }
+  const rate = latestOnOrBefore(ratesByCurrency.get(currency), day)
+  if (!rate) return null
+  return {
+    cents: convertMinor(obs.value, currencyDecimals(currency), rate.rate),
+    stale: diffDays(day, rate.date) > STALE_AFTER_DAYS,
+    rate,
+  }
+}
+
 export function participationStart(asset: AssetInput, sortedValuations: ValuationInput[] | undefined): string {
   const created = parisDate(asset.createdAt)
   const first = sortedValuations?.[0]?.date
@@ -177,29 +246,36 @@ export function assetHistory(
 export function computeDashboard(
   assets: AssetInput[],
   valuations: ValuationInput[],
-  options: { today: string, preset?: RangePreset | null, from?: string | null, to?: string | null },
+  options: { today: string, preset?: RangePreset | null, from?: string | null, to?: string | null, rates?: RateInput[] },
 ): DashboardResult {
   const { today } = options
   const colors = resolveColors(assets)
   const byAsset = indexValuations(valuations, today)
+  const ratesByCurrency = indexRates(options.rates ?? [], today)
   const ordered = sortAssets(assets)
 
+  const eurCentsNow = new Map<string, bigint>()
   const summaries: AssetSummary[] = ordered.map((a) => {
     const list = byAsset.get(a.id) ?? []
     const latest = list.at(-1)
     const ageDays = latest ? diffDays(today, latest.date) : null
+    const included = isAggregated(a.currency)
+    const eur = latest && included ? eurValueOn(a.currency, latest, today, ratesByCurrency) : null
+    if (eur) eurCentsNow.set(a.id, eur.cents)
     return {
       id: a.id,
       name: a.name,
       category: a.category,
       currency: a.currency,
       color: colors.get(a.id)!,
-      included: a.currency === AGGREGATION_CURRENCY,
+      included,
       participatesFrom: participationStart(a, list),
-      latestValue: latest ? minorToDecimal(latest.value) : null,
+      latestValue: eur ? minorToDecimal(eur.cents) : null,
+      latestNativeValue: latest ? minorToDecimal(latest.value, currencyDecimals(a.currency)) : null,
+      latestRate: eur?.rate ? { rate: eur.rate.rate, date: eur.rate.date } : null,
       latestDate: latest?.date ?? null,
       ageDays,
-      stale: ageDays !== null && ageDays > STALE_AFTER_DAYS,
+      stale: eur?.stale ?? (ageDays !== null && ageDays > STALE_AFTER_DAYS),
       valuationCount: list.length,
     }
   })
@@ -212,7 +288,7 @@ export function computeDashboard(
   const participatingNow = included.filter(s => s.participatesFrom <= today)
   const knownNow = participatingNow.filter(s => s.latestValue !== null)
   let currentTotal = 0n
-  for (const s of knownNow) currentTotal += BigInt(byAsset.get(s.id)!.at(-1)!.value)
+  for (const s of knownNow) currentTotal += eurCentsNow.get(s.id)!
 
   // Daily history, generated at query time. Never persisted.
   const history: HistoryPoint[] = []
@@ -241,14 +317,15 @@ export function computeDashboard(
         continue
       }
       participating++
-      if (!obs) {
+      const eur = obs ? eurValueOn(s.currency, obs, day, ratesByCurrency) : null
+      if (!eur) {
         values[s.id] = null
         continue
       }
       known++
-      total += BigInt(obs.value)
-      values[s.id] = minorToDecimal(obs.value)
-      if (diffDays(day, obs.date) > STALE_AFTER_DAYS) stale++
+      total += eur.cents
+      values[s.id] = minorToDecimal(eur.cents)
+      if (eur.stale) stale++
     }
     const complete = participating > 0 && known === participating
     if (complete) {

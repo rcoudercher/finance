@@ -50,19 +50,29 @@ Environment variables: `DATABASE_PATH` (default `./data/finance.sqlite`), `HOST`
   then add up the known values, and the day is marked incomplete.
 - **Freshness:** an observation more than 30 days older than the day it is used for is flagged **stale**. It still
   counts in totals.
-- **Currencies:** EUR, USD, GBP, CHF, CAD, AUD. Only **EUR** assets are added to totals and charts. Other currencies
-  are listed as excluded, and there is no FX conversion. An asset's currency is locked once it has a valuation.
-- Assets can't be deleted or archived. Valuations can be created, corrected and deleted.
+- **Currencies:** EUR, USD, GBP, CHF, CAD, AUD and **BTC**. An asset's currency is locked once it has a valuation.
+  EUR assets are added to totals as is. Other fiat currencies are listed as excluded (no FX conversion).
+- **BTC assets** hold their balance in BTC, not euros: valuations are quantities with up to 8 decimals (stored as
+  satoshis), e.g. `0.1`. Their EUR value on a day is the BTC balance carried forward times the latest BTC-EUR rate on
+  or before that day (`rates` table), rounded to the cent. No rate yet means the EUR value is unknown, not zero. A BTC
+  quantity is never stale (it changes only when you buy or sell); the rate is flagged stale after 30 days.
+- **Asset IDs are lowercase ULIDs** (26 characters, sortable by creation time), e.g. `/assets/01fk9tan00jp53qj7x2sxa4hh1`.
+  Any other ID, uppercase included, gets a 404. `pnpm db:migrate` converts older slug, UUID or uppercase-ULID asset IDs,
+  keeping their valuations. The demo
+  assets have fixed ULIDs, so `pnpm db:seed` still recognises them.
+- Valuations can be created, corrected and deleted. An asset can be deleted permanently, together with all of its
+  valuations, in one transaction (from the danger zone on its page). There is no archive or undo: restore from a backup.
 
 ## API
 
 | Method | Path | Notes |
 |---|---|---|
 | GET / POST | `/api/assets` | |
-| GET / PATCH | `/api/assets/:id` | PATCH returns 409 when changing the currency of an asset that has valuations |
+| GET / PATCH / DELETE | `/api/assets/:id` | PATCH returns 409 when changing the currency of an asset that has valuations. DELETE removes the asset and all its valuations (204) |
 | GET / POST | `/api/assets/:id/valuations` | GET accepts `?from=&to=` (inclusive) |
 | PATCH / DELETE | `/api/valuations/:id` | |
 | GET | `/api/dashboard` | `?range=1M\|3M\|6M\|1Y\|ALL` or `?from=YYYY-MM-DD&to=YYYY-MM-DD` |
+| GET / PUT | `/api/rates` | GET `?currency=BTC[&from=&to=]`. PUT `{ currency, source, rates: [{ date, rate }] }` inserts or replaces those days |
 
 Errors are JSON `{ statusCode, statusMessage, message, data? }`:
 **400** for validation errors (`data.issues`), **404** for a missing record, **409** for a duplicate date or a
@@ -102,11 +112,11 @@ app is running and includes recent writes still in the `-wal` file. It runs `int
 gzips it to `~/backups/finance/finance-<UTC timestamp>.sqlite.gz` (mode 600), and deletes snapshots older than
 30 days (`BACKUP_KEEP_DAYS`). Don't back up by copying `data/finance.sqlite` directly.
 
-Daily at 03:15 from the crontab (`crontab -e`), logging to `~/backups/finance.log`:
+Daily at 03:15 UTC from the crontab (`crontab -e`), logging to `~/logs/finance-backup.log`:
 ```
-15 3 * * * cd /home/you/projects/finance && /home/you/.local/bin/node scripts/backup.mjs >> /home/you/backups/finance.log 2>&1
+15 3 * * * cd /home/you/projects/finance && /home/you/.local/bin/node scripts/backup.mjs >> /home/you/logs/finance-backup.log 2>&1
 ```
-Check it with `tail ~/backups/finance.log; ls -lh ~/backups/finance`. Also keep copies off the VPS.
+Check it with `tail ~/logs/finance-backup.log; ls -lh ~/backups/finance`. Also keep copies off the VPS.
 
 To restore:
 ```sh
@@ -118,6 +128,17 @@ pnpm db:migrate                      # brings an older backup up to the current 
 sudo systemctl start finance
 ```
 
+## BTC-EUR rate
+
+`scripts/btc-rate.mjs` stores today's BTC-EUR rate (Europe/Paris date) from the public Coinbase spot price, no key
+needed, through `PUT /api/rates`. A day that already has a rate is replaced, so reruns are harmless. On error it saves
+nothing and exits 1; the last rate carries forward. `--from YYYY-MM-DD` also backfills daily closes (Coinbase UTC
+daily candles) from that date to yesterday, e.g. after recording a past BTC quantity.
+
+Daily at 21:50 UTC (22:50/23:50 Paris) from the crontab, logging to `~/logs/btc-rate.log`:
+```
+50 21 * * * cd /home/you/projects/finance && /home/you/.local/bin/node scripts/btc-rate.mjs >> /home/you/logs/btc-rate.log 2>&1
+```
 ## Project layout
 
 ```
