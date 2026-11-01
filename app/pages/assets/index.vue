@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { TableColumn } from '@nuxt/ui'
-import type { AssetDetailDTO } from '#shared/types/api'
+import type { AssetDetailDTO, DashboardDTO } from '#shared/types/api'
 import { diffDays, parisDate } from '#shared/utils/dates'
 import { STALE_AFTER_DAYS } from '#shared/utils/finance'
 import { CONVERTED_CURRENCIES } from '#shared/utils/money'
@@ -10,6 +10,8 @@ useHead({ title: 'Assets · Finance' })
 const route = useRoute()
 const router = useRouter()
 const { data: assets, refresh, error } = await useFetch<AssetDetailDTO[]>('/api/assets', { default: () => [] })
+// Same data as the dashboard's allocation donut.
+const { data: dashboard, refresh: refreshDashboard } = await useFetch<DashboardDTO>('/api/dashboard', { query: { range: '1M' }, lazy: true })
 
 const createOpen = ref(route.query.new === '1')
 watch(createOpen, (v) => {
@@ -87,7 +89,7 @@ const columns = computed(() => {
 })
 
 async function onCreated(asset: { id: string }) {
-  await refresh()
+  await Promise.all([refresh(), refreshDashboard()])
   await navigateTo(`/assets/${asset.id}`)
 }
 </script>
@@ -111,9 +113,13 @@ async function onCreated(asset: { id: string }) {
         :actions="[{ label: 'New asset', icon: 'i-lucide-plus', onClick: () => { createOpen = true } }]"
       />
 
-      <UCard v-else :ui="{ body: 'p-0 sm:p-0' }">
-        <UTable :data="assets" :columns="columns" />
-      </UCard>
+      <template v-else>
+        <UCard :ui="{ body: 'p-0 sm:p-0' }">
+          <UTable :data="assets" :columns="columns" />
+        </UCard>
+
+        <AllocationCard v-if="dashboard" :dashboard="dashboard" />
+      </template>
     </UPageBody>
 
     <AssetFormModal v-model:open="createOpen" @saved="onCreated" />
