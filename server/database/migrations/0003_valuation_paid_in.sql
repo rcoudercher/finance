@@ -1,0 +1,1 @@
+ALTER TABLE `valuations` ADD `paid_in` integer;

@@ -8,6 +8,8 @@ export interface ValuationDTO {
   assetId: string
   date: string
   value: string
+  /** Total net amount paid in up to this date, in EUR (any asset currency). Null = not recorded. */
+  paidIn: string | null
   source: ValuationSource
   createdAt: string
   updatedAt: string
@@ -32,6 +34,8 @@ export interface AssetDetailDTO extends AssetDTO {
   latestValuation: ValuationDTO | null
   /** For BTC assets: latest balance x latest BTC-EUR rate. Null for EUR/other currencies or without a rate. */
   latestEurValue: { value: string, rate: string, rateDate: string, rateStale: boolean } | null
+  /** Gains and return, from valuations that record a paid-in amount. Null when none does. */
+  performance: PerformanceResult | null
 }
 
 export interface RateDTO {
@@ -42,6 +46,7 @@ export interface RateDTO {
 }
 
 import type { BudgetHistoryResult, BudgetKind, BudgetMonthResult } from '../utils/budget'
+import type { PerformanceResult } from '../utils/performance'
 
 export type { DashboardResult as DashboardDTO } from '../utils/finance'
 

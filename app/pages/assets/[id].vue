@@ -51,11 +51,27 @@ const chartRange = computed<IsoRange>(() => filter.value ?? { from: participates
 
 const chartCurrency = computed(() => (converted.value ? 'EUR' : asset.value?.currency ?? 'EUR'))
 
+// "Paid in" (EUR), carried forward from the valuations that record it.
+const paidInList = computed(() => allValuations.value
+  .filter(v => v.paidIn !== null && v.date <= today)
+  .map(v => ({ date: v.date, paidIn: v.paidIn! }))
+  .sort((a, b) => (a.date < b.date ? -1 : 1)))
+const tracksPaidIn = computed(() => paidInList.value.length > 0)
+/** Latest recorded paid in, to pre-fill the next valuation. */
+const previousPaidIn = computed(() => paidInList.value.at(-1)?.paidIn ?? null)
+const perf = computed(() => asset.value?.performance ?? null)
+
 const chartRows = computed<ChartRow[]>(() => assetHistory(allValuations.value, {
   ...chartRange.value,
   today,
   participatesFrom: participatesFrom.value,
 }).map((p) => {
+  const row = valueRow(p)
+  if (tracksPaidIn.value) row.values.paidIn = latestOnOrBefore(paidInList.value, p.date)?.paidIn ?? null
+  return row
+}))
+
+function valueRow(p: ReturnType<typeof assetHistory>[number]): ChartRow {
   if (!converted.value || p.value === null) {
     const notes = p.stale && p.observedOn ? [`Last observed ${formatDate(p.observedOn)} (stale)`] : []
     return { date: p.date, values: { value: p.value }, notes }
@@ -68,7 +84,21 @@ const chartRows = computed<ChartRow[]>(() => assetHistory(allValuations.value, {
   const eur = minorToDecimal(convertMinor(parseDecimalToMinor(p.value, decimals), decimals, rate.rate))
   const rateNote = diffDays(p.date, rate.date) > STALE_AFTER_DAYS ? [`Rate from ${formatDate(rate.date)} (stale)`] : []
   return { date: p.date, values: { value: eur }, notes: [`${formatMoney(p.value, currency)} × ${formatMoney(rate.rate)}`, ...rateNote] }
-}))
+}
+
+const chartSeries = computed(() => {
+  const series = [{ key: 'value', name: asset.value?.name ?? 'Value', color: asset.value?.displayColor ?? 'var(--ui-primary)' }]
+  if (tracksPaidIn.value) series.push({ key: 'paidIn', name: 'Paid in', color: 'var(--ui-text-dimmed)' })
+  return series
+})
+
+const returnTile = computed(() => {
+  const p = perf.value
+  if (!p) return null
+  if (p.annualReturn !== null) return { label: 'Annual return', value: `${formatPercent(p.annualReturn)} / yr`, hint: `Since ${formatDate(p.since)}, weighted by when money was added` }
+  if (p.periodReturn !== null) return { label: `Return since ${formatDate(p.since)}`, value: formatPercent(p.periodReturn), hint: 'Shown per year once there is a year of data' }
+  return { label: 'Return', value: '—', hint: 'Needs a second valuation with paid in' }
+})
 
 const hasChartData = computed(() => chartRows.value.some(r => r.values.value !== null))
 const latest = computed(() => asset.value?.latestValuation ?? null)
@@ -148,6 +178,13 @@ const columns = computed<TableColumn<ValuationDTO>[]>(() => [
     header: () => h('div', { class: 'text-right' }, converted.value ? 'Quantity' : 'Balance'),
     cell: ({ row }) => h('div', { class: 'text-right tabular-nums' }, formatMoney(row.original.value, asset.value?.currency)),
   },
+  ...(tracksPaidIn.value
+    ? [{
+        accessorKey: 'paidIn',
+        header: () => h('div', { class: 'text-right' }, 'Paid in'),
+        cell: ({ row }: { row: { original: ValuationDTO } }) => h('div', { class: 'text-right tabular-nums text-muted' }, formatMoney(row.original.paidIn)),
+      } satisfies TableColumn<ValuationDTO>]
+    : []),
   {
     accessorKey: 'source',
     header: 'Source',
@@ -290,6 +327,60 @@ const columns = computed<TableColumn<ValuationDTO>[]>(() => [
         </UCard>
       </div>
 
+      <UCard v-if="perf && returnTile">
+        <template #header>
+          <h2 class="font-semibold text-highlighted">
+            Performance
+          </h2>
+          <p class="text-sm text-muted">
+            As of {{ formatDate(perf.asOf) }}, from the amounts you have paid in
+          </p>
+        </template>
+        <div class="grid gap-6 sm:grid-cols-3">
+          <div>
+            <p class="text-sm text-muted">
+              Paid in
+            </p>
+            <p class="mt-1 text-2xl font-semibold text-highlighted tabular-nums">
+              {{ formatMoney(perf.paidIn) }}
+            </p>
+            <p class="mt-1 text-xs text-muted">
+              Value {{ formatMoney(perf.value) }}
+            </p>
+          </div>
+          <div>
+            <p class="text-sm text-muted">
+              Gains
+            </p>
+            <p class="mt-1 text-2xl font-semibold tabular-nums" :class="perf.gain.startsWith('-') ? 'text-error' : 'text-success'">
+              {{ formatMoneySigned(perf.gain) }}
+            </p>
+            <p class="mt-1 text-xs text-muted">
+              {{ perf.gainRatio === null ? 'Value minus paid in' : `${formatPercent(perf.gainRatio)} on what you paid in` }}
+            </p>
+          </div>
+          <div>
+            <p class="text-sm text-muted">
+              {{ returnTile.label }}
+            </p>
+            <p class="mt-1 text-2xl font-semibold text-highlighted tabular-nums">
+              {{ returnTile.value }}
+            </p>
+            <p class="mt-1 text-xs text-muted">
+              {{ returnTile.hint }}
+            </p>
+          </div>
+        </div>
+      </UCard>
+      <UAlert
+        v-else-if="isAggregated(asset.currency) && asset.valuationCount > 0"
+        color="neutral"
+        variant="subtle"
+        icon="i-lucide-trending-up"
+        title="See your gains and return"
+        description="Add the total you have paid in (e.g. your broker's &quot;Versements&quot;) when you record a valuation."
+      />
+
       <UCard>
         <template #header>
           <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -311,7 +402,8 @@ const columns = computed<TableColumn<ValuationDTO>[]>(() => [
         <HistoryChart
           v-if="hasChartData"
           :rows="chartRows"
-          :series="[{ key: 'value', name: asset.name, color: asset.displayColor }]"
+          :series="chartSeries"
+          :legend="tracksPaidIn"
           :currency="chartCurrency"
           :height="260"
           :label="`${asset.name} value over time`"
@@ -352,6 +444,7 @@ const columns = computed<TableColumn<ValuationDTO>[]>(() => [
       :asset-id="asset.id"
       :currency="asset.currency"
       :valuation="editingValuation"
+      :previous-paid-in="previousPaidIn"
       @saved="refreshAllData"
     />
 

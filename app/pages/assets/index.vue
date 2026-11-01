@@ -22,7 +22,22 @@ const isStale = (date: string | undefined) => !!date && diffDays(today, date) > 
 const UBadge = resolveComponent('UBadge')
 const ULink = resolveComponent('ULink')
 
-const columns: TableColumn<AssetDetailDTO>[] = [
+const anyPerformance = computed(() => assets.value.some(a => a.performance))
+
+const gainsColumn: TableColumn<AssetDetailDTO> = {
+  id: 'gains',
+  header: () => h('div', { class: 'text-right' }, 'Gains'),
+  cell: ({ row }) => {
+    const p = row.original.performance
+    if (!p) return h('div', { class: 'text-right text-muted' }, '—')
+    return h('div', { class: 'text-right tabular-nums' }, [
+      h('div', { class: p.gain.startsWith('-') ? 'text-error' : 'text-success' }, formatMoneySigned(p.gain)),
+      h('div', { class: 'text-xs text-muted' }, p.annualReturn !== null ? `${formatPercent(p.annualReturn)} / yr` : formatPercent(p.gainRatio)),
+    ])
+  },
+}
+
+const baseColumns: TableColumn<AssetDetailDTO>[] = [
   {
     accessorKey: 'name',
     header: 'Name',
@@ -63,6 +78,13 @@ const columns: TableColumn<AssetDetailDTO>[] = [
   },
   { accessorKey: 'valuationCount', header: () => h('div', { class: 'text-right' }, 'Valuations'), cell: ({ row }) => h('div', { class: 'text-right tabular-nums' }, row.original.valuationCount) },
 ]
+
+// The Gains column only appears once an asset records what was paid in; it goes right after "Latest value".
+const columns = computed(() => {
+  if (!anyPerformance.value) return baseColumns
+  const i = baseColumns.findIndex(c => c.id === 'latest')
+  return [...baseColumns.slice(0, i + 1), gainsColumn, ...baseColumns.slice(i + 1)]
+})
 
 async function onCreated(asset: { id: string }) {
   await refresh()

@@ -11,6 +11,8 @@ const props = defineProps<{
   currency: string
   /** Valuation to correct; omit to record a new one. */
   valuation?: ValuationDTO | null
+  /** Latest recorded "paid in", used to pre-fill a new valuation (it rarely changes between two). */
+  previousPaidIn?: string | null
 }>()
 
 const open = defineModel<boolean>('open', { default: false })
@@ -26,6 +28,7 @@ const schema = z.object({
   value: z.number({ error: 'Balance is required' })
     .refine(v => Math.abs(v) <= maxAmount.value, 'Amount is out of range'),
   source: z.enum(['manual', 'import', 'api']),
+  paidIn: z.number().refine(v => Math.abs(v) <= 9_999_999_999_999.99, 'Amount is out of range').optional(),
 })
 type Schema = z.output<typeof schema>
 
@@ -39,6 +42,8 @@ watch(open, (isOpen) => {
   state.date = v?.date ?? today
   state.value = v ? Number(v.value) : undefined
   state.source = v?.source ?? 'manual'
+  const paid = v ? v.paidIn : props.previousPaidIn
+  state.paidIn = paid == null ? undefined : Number(paid)
   dateValue.value = parseDate(state.date)
 }, { immediate: true })
 
@@ -60,12 +65,22 @@ const balanceHelp = computed(() => (decimals.value === 2
   ? `Total value in ${props.currency}, with a decimal comma, e.g. 1 234,56`
   : `Total quantity in ${props.currency} (up to ${decimals.value} decimals), with a decimal comma, e.g. 0,1. Converted to EUR with the daily rate.`))
 
+const paidInHelp = computed(() => 'Total you have put in so far, in EUR, minus withdrawals (e.g. your broker\'s "Versements").'
+  + (decimals.value === 2 ? '' : ' For crypto: the euros spent buying it.')
+  + ' Leave empty if you don\'t track it.')
+
 async function onSubmit(event: FormSubmitEvent<Schema>) {
   saving.value = true
+  // An empty "paid in" is sent as null: not tracked for this valuation.
+  const body = {
+    ...event.data,
+    value: toDecimalString(event.data.value),
+    paidIn: event.data.paidIn === undefined || event.data.paidIn === null ? null : minorToDecimal(Math.round(event.data.paidIn * 100)),
+  }
   try {
     const saved = props.valuation
-      ? await $fetch<ValuationDTO>(`/api/valuations/${props.valuation.id}`, { method: 'PATCH', body: { ...event.data, value: toDecimalString(event.data.value) } })
-      : await $fetch<ValuationDTO>(`/api/assets/${props.assetId}/valuations`, { method: 'POST', body: { ...event.data, value: toDecimalString(event.data.value) } })
+      ? await $fetch<ValuationDTO>(`/api/valuations/${props.valuation.id}`, { method: 'PATCH', body })
+      : await $fetch<ValuationDTO>(`/api/assets/${props.assetId}/valuations`, { method: 'POST', body })
     toast.add({ title: props.valuation ? 'Valuation updated' : 'Valuation added', color: 'success', icon: 'i-lucide-check' })
     open.value = false
     emit('saved', saved)
@@ -109,6 +124,26 @@ async function onSubmit(event: FormSubmitEvent<Schema>) {
             disable-wheel-change
             inputmode="decimal"
             :placeholder="decimals === 2 ? '0,00' : '0'"
+            class="w-full"
+          />
+        </UFormField>
+
+        <UFormField
+          label="Paid in (optional)"
+          name="paidIn"
+          :help="paidInHelp"
+        >
+          <UInputNumber
+            v-model.optional="state.paidIn"
+            locale="fr-FR"
+            :format-options="amountFormatOptions('EUR')"
+            :step="0.01"
+            :step-snapping="false"
+            :increment="false"
+            :decrement="false"
+            disable-wheel-change
+            inputmode="decimal"
+            placeholder="Not tracked"
             class="w-full"
           />
         </UFormField>

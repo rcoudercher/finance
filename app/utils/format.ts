@@ -83,6 +83,20 @@ export const SOURCE_OPTIONS = [
   { label: 'API', value: 'api' },
 ] as const
 
+const signedPercent = new Intl.NumberFormat('fr-FR', { style: 'percent', minimumFractionDigits: 1, maximumFractionDigits: 1, signDisplay: 'exceptZero' })
+
+/** 0.192 -> "+19,2 %". */
+export function formatPercent(ratio: number | null | undefined): string {
+  return ratio === null || ratio === undefined ? '—' : signedPercent.format(ratio)
+}
+
+/** Signed money: "+3 256,70 €" / "−120,00 €". */
+export function formatMoneySigned(value: string | null | undefined, currency = 'EUR'): string {
+  if (value === null || value === undefined) return '—'
+  const formatted = formatMoney(value, currency)
+  return value.startsWith('-') || /^0(\.0+)?$/.test(value) ? formatted : `+${formatted}`
+}
+
 /** Error message from a $fetch / useFetch error. */
 export function apiErrorMessage(error: unknown): string {
   const e = error as { data?: { message?: string }, message?: string } | null

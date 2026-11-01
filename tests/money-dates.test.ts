@@ -44,7 +44,7 @@ describe('money: decimal strings <-> integer minor units', () => {
 
   it('validation schema converts the value to minor units', () => {
     // The schema checks the shape; the repository applies the asset currency's precision (see db tests).
-    expect(valuationCreateSchema.parse({ date: '2024-02-29', value: ' 10.5 ' })).toEqual({ date: '2024-02-29', value: '10.5', source: 'manual' })
+    expect(valuationCreateSchema.parse({ date: '2024-02-29', value: ' 10.5 ' })).toEqual({ date: '2024-02-29', value: '10.5', source: 'manual', paidIn: null })
     expect(valuationCreateSchema.safeParse({ date: '2024-02-29', value: 10.5 }).success).toBe(false)
     expect(valuationCreateSchema.safeParse({ date: '2024-02-29', value: '1e5' }).success).toBe(false)
     expect(valuationCreateSchema.safeParse({ date: '2024-02-29', value: '1,5' }).success).toBe(false)

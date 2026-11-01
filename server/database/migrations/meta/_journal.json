@@ -22,6 +22,13 @@
       "when": 1793528912231,
       "tag": "0002_budget",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1793535102206,
+      "tag": "0003_valuation_paid_in",
+      "breakpoints": true
     }
   ]
 }

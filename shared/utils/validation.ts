@@ -54,16 +54,21 @@ export const assetUpdateSchema = z.object({
  */
 export const decimalString = z.string().trim().regex(/^-?\d{1,15}(\.\d{1,8})?$/, 'Amount must be a decimal number such as 1234.56')
 
+/** Total net amount paid in so far, in EUR whatever the asset's currency (2 decimals). Null = not tracked. */
+const paidIn = decimalAmount.nullable()
+
 export const valuationCreateSchema = z.object({
   date: isoDate,
   value: decimalString,
   source: z.enum(VALUATION_SOURCE_VALUES).default('manual'),
+  paidIn: paidIn.default(null),
 }).strict()
 
 export const valuationUpdateSchema = z.object({
   date: isoDate.optional(),
   value: decimalString.optional(),
   source: z.enum(VALUATION_SOURCE_VALUES).optional(),
+  paidIn: paidIn.optional(),
 }).strict()
 
 export const valuationListQuerySchema = z.object({

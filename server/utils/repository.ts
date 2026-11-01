@@ -1,12 +1,13 @@
 import { randomUUID } from 'node:crypto'
-import { and, asc, count, desc, eq, gte, lte, sql } from 'drizzle-orm'
+import { and, asc, count, desc, eq, gte, isNotNull, lte, sql } from 'drizzle-orm'
 import { z } from 'zod'
 import type { DB } from '../database/client'
 import { assets, rates, valuations, type Asset, type Valuation } from '../database/schema'
 import { CONVERTED_CURRENCIES, convertMinor, currencyDecimals, minorToDecimal, MoneyError, parseDecimalToMinor } from '../../shared/utils/money'
 import { parisDate } from '../../shared/utils/dates'
 import { isUlid, ulid } from '../../shared/utils/ulid'
-import { computeDashboard, RangeError400, resolveColors, STALE_AFTER_DAYS, type RangePreset } from '../../shared/utils/finance'
+import { computeDashboard, isAggregated, latestOnOrBefore, RangeError400, resolveColors, STALE_AFTER_DAYS, type RangePreset } from '../../shared/utils/finance'
+import { computePerformance } from '../../shared/utils/performance'
 import { diffDays } from '../../shared/utils/dates'
 import { assetCreateSchema, assetUpdateSchema, ratesUpsertSchema, valuationCreateSchema, valuationUpdateSchema } from '../../shared/utils/validation'
 
@@ -40,6 +41,8 @@ export function serializeValuation(v: Valuation, currency: string) {
     assetId: v.assetId,
     date: v.date,
     value: minorToDecimal(v.value, currencyDecimals(currency)),
+    /** EUR, whatever the asset's currency. */
+    paidIn: v.paidIn == null ? null : minorToDecimal(v.paidIn),
     source: v.source,
     createdAt: v.createdAt.toISOString(),
     updatedAt: v.updatedAt.toISOString(),
@@ -77,12 +80,39 @@ function latestEurValue(db: DB, a: Asset, latest: Valuation | undefined, today: 
   }
 }
 
+/**
+ * Gains and return from the valuations that record a paid-in amount (on or before today), valued in EUR
+ * (BTC with the rate on each date). Null when none does, or for currencies that are not converted to EUR.
+ */
+function assetPerformance(db: DB, a: Asset, today: string) {
+  if (!isAggregated(a.currency)) return null
+  const tracked = db.select().from(valuations)
+    .where(and(eq(valuations.assetId, a.id), lte(valuations.date, today), isNotNull(valuations.paidIn)))
+    .orderBy(asc(valuations.date)).all()
+  if (!tracked.length) return null
+  const assetRates = CONVERTED_CURRENCIES.includes(a.currency)
+    ? db.select({ date: rates.date, rate: rates.rate }).from(rates).where(eq(rates.currency, a.currency)).orderBy(asc(rates.date)).all()
+    : []
+  const observations = []
+  for (const v of tracked) {
+    let cents = v.value
+    if (CONVERTED_CURRENCIES.includes(a.currency)) {
+      const rate = latestOnOrBefore(assetRates, v.date)
+      if (!rate) continue
+      cents = Number(convertMinor(v.value, currencyDecimals(a.currency), rate.rate))
+    }
+    observations.push({ date: v.date, valueCents: cents, paidInCents: v.paidIn! })
+  }
+  return computePerformance(observations)
+}
+
 function withLatest(db: DB, a: Asset, valuationCount: number, color: string, today: string) {
   const latest = latestValuation(db, a.id, today)
   return {
     ...serializeAsset(a, valuationCount, color),
     latestValuation: latest ? serializeValuation(latest, a.currency) : null,
     latestEurValue: latestEurValue(db, a, latest, today),
+    performance: assetPerformance(db, a, today),
   }
 }
 
@@ -191,7 +221,7 @@ export function createValuation(db: DB, assetId: string, input: z.output<typeof 
   assertNotFuture(input.date)
   const asset = findAsset(db, assetId)
   const now = new Date()
-  const row: Valuation = { id: randomUUID(), assetId, ...input, value: toMinor(input.value, asset.currency), createdAt: now, updatedAt: now }
+  const row: Valuation = { id: randomUUID(), assetId, ...input, value: toMinor(input.value, asset.currency), paidIn: input.paidIn ?? null, createdAt: now, updatedAt: now }
   wrapUnique(() => db.insert(valuations).values(row).run())
   return serializeValuation(row, asset.currency)
 }

@@ -24,6 +24,9 @@ export const valuations = sqliteTable('valuations', {
   assetId: text('asset_id').notNull().references(() => assets.id, { onDelete: 'restrict', onUpdate: 'restrict' }),
   date: text('date').notNull(), // YYYY-MM-DD calendar date (Europe/Paris)
   value: integer('value', { mode: 'number' }).notNull(), // integer minor units
+  // Optional: total net amount paid into the asset up to this date, in EUR cents, whatever the asset's currency
+  // (deposits minus withdrawals, as a broker shows it, e.g. a PEA's "Versements"). Null = not tracked.
+  paidIn: integer('paid_in', { mode: 'number' }),
   source: text('source', { enum: VALUATION_SOURCES }).notNull().default('manual'),
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
   updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
