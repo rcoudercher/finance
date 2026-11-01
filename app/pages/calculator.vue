@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import type { BudgetMonthDTO, DashboardDTO } from '#shared/types/api'
 import type { ChartRow, ChartSeries } from '~/components/HistoryChart.vue'
 import { COMPOUND_LIMITS, compoundProjection, type CompoundInput } from '#shared/utils/compound'
 
@@ -50,6 +51,51 @@ watch(input, (v) => {
   router.replace({ query: Object.fromEntries((Object.keys(PARAMS) as (keyof CompoundInput)[]).map(k => [PARAMS[k], String(v[k])])) })
 })
 
+// "Use my numbers": current net worth as the initial capital, this month's budget left-over as the monthly saving.
+const { data: dashboardNow } = await useFetch<DashboardDTO>('/api/dashboard', { query: { range: '1M' }, lazy: true })
+const { data: budgetNow } = await useFetch<BudgetMonthDTO>('/api/budget', { lazy: true })
+
+const mine = computed(() => {
+  const total = dashboardNow.value?.current.total ?? null
+  const remaining = budgetNow.value && budgetNow.value.itemCount > 0 ? budgetNow.value.totals.remaining : null
+  return {
+    capital: total === null ? null : Number(total),
+    capitalPartial: !!dashboardNow.value && !dashboardNow.value.current.complete,
+    savings: remaining === null ? null : Number(remaining),
+    month: budgetNow.value?.month ?? null,
+  }
+})
+const canUseMine = computed(() => mine.value.capital !== null || mine.value.savings !== null)
+const usingMine = ref(false)
+
+function useMyNumbers() {
+  const m = mine.value
+  if (m.capital !== null) form.initialCapital = Math.min(COMPOUND_LIMITS.initialCapital.max, Math.max(0, m.capital))
+  // A negative left-over (expenses above income) can't be invested: use 0.
+  if (m.savings !== null) form.monthlySavings = Math.min(COMPOUND_LIMITS.monthlySavings.max, Math.max(0, m.savings))
+  usingMine.value = true
+}
+
+// Editing either amount by hand means the figures are no longer "mine".
+watch(() => [form.initialCapital, form.monthlySavings], ([capital, savings]) => {
+  if (!usingMine.value) return
+  const m = mine.value
+  const sameCapital = m.capital === null || capital === Math.max(0, m.capital)
+  const sameSavings = m.savings === null || savings === Math.max(0, m.savings)
+  if (!sameCapital || !sameSavings) usingMine.value = false
+})
+
+const capitalHelp = computed(() => {
+  if (!usingMine.value || mine.value.capital === null) return undefined
+  return `Your net worth today${mine.value.capitalPartial ? ' (partial: some assets have no known value)' : ''}`
+})
+const savingsHelp = computed(() => {
+  if (!usingMine.value || mine.value.savings === null || !mine.value.month) return undefined
+  return mine.value.savings < 0
+    ? `Your ${formatMonth(mine.value.month)} budget is negative (${fmt(mine.value.savings)}), so 0 is used`
+    : `Left over in your ${formatMonth(mine.value.month)} budget`
+})
+
 const points = computed(() => compoundProjection(lastValid.value))
 const final = computed(() => points.value.at(-1)!)
 const interest = computed(() => final.value.balance - final.value.contributions)
@@ -90,12 +136,23 @@ const tiles = computed(() => [
       <div class="grid gap-6 lg:grid-cols-3">
         <UCard>
           <template #header>
-            <h2 class="font-semibold text-highlighted">
-              Your plan
-            </h2>
+            <div class="flex items-center justify-between gap-2">
+              <h2 class="font-semibold text-highlighted">
+                Your plan
+              </h2>
+              <UButton
+                v-if="canUseMine"
+                label="Use my numbers"
+                icon="i-lucide-wand-sparkles"
+                size="sm"
+                :color="usingMine ? 'primary' : 'neutral'"
+                :variant="usingMine ? 'subtle' : 'outline'"
+                @click="useMyNumbers"
+              />
+            </div>
           </template>
           <div class="space-y-4">
-            <UFormField label="Initial capital">
+            <UFormField label="Initial capital" :help="capitalHelp">
               <UInputNumber
                 v-model.optional="form.initialCapital"
                 locale="fr-FR"
@@ -107,7 +164,7 @@ const tiles = computed(() => [
                 class="w-full"
               />
             </UFormField>
-            <UFormField label="Monthly savings">
+            <UFormField label="Monthly savings" :help="savingsHelp">
               <UInputNumber
                 v-model.optional="form.monthlySavings"
                 locale="fr-FR"
