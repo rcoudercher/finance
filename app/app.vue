@@ -8,6 +8,7 @@ const items = computed<NavigationMenuItem[]>(() => [
   { label: 'Dashboard', icon: 'i-lucide-chart-line', to: '/', active: route.path === '/' },
   { label: 'Assets', icon: 'i-lucide-wallet', to: '/assets', active: route.path.startsWith('/assets') },
   { label: 'Budget', icon: 'i-lucide-piggy-bank', to: '/budget', active: route.path.startsWith('/budget') },
+  { label: 'Calculator', icon: 'i-lucide-calculator', to: '/calculator', active: route.path.startsWith('/calculator') },
 ])
 </script>
 

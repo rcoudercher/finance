@@ -29,6 +29,8 @@ const props = withDefaults(defineProps<{
   label: string
   /** Rows are months (YYYY-MM) rather than days. */
   monthly?: boolean
+  /** Custom label for a row key (axis ticks and tooltip title), for rows that are not dates. */
+  formatX?: (key: string) => string
 }>(), { currency: 'EUR', legend: false, height: 320, monthly: false })
 
 interface Point {
@@ -66,6 +68,7 @@ const tickValues = computed(() => {
 })
 
 const tickFormat = computed(() => {
+  if (props.formatX) return props.formatX
   if (props.monthly) return formatMonthShort
   const span = props.rows.length
   return span > 190 ? formatMonthYear : formatDateShort
@@ -113,7 +116,7 @@ function tooltipRow(focused: readonly { datum: unknown }[]) {
     <template #tooltip="{ points: focused }">
       <template v-if="tooltipRow(focused)">
         <p class="font-medium text-highlighted">
-          {{ monthly ? formatMonth(tooltipRow(focused)!.date) : formatDate(tooltipRow(focused)!.date) }}
+          {{ formatX ? formatX(tooltipRow(focused)!.date) : monthly ? formatMonth(tooltipRow(focused)!.date) : formatDate(tooltipRow(focused)!.date) }}
         </p>
         <div v-for="s in series" :key="s.key" class="flex items-center gap-1.5">
           <span class="size-2 shrink-0 rounded-full" :style="{ backgroundColor: s.color }" />
