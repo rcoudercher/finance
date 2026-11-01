@@ -16,7 +16,7 @@ const log = msg => console.log(`${new Date().toISOString()} ${msg}`)
 async function request(url, options = {}) {
   const res = await fetch(url, {
     ...options,
-    headers: { 'user-agent': 'finance.example.com btc-rate', 'content-type': 'application/json', ...options.headers },
+    headers: { 'user-agent': 'finance-app btc-rate', 'content-type': 'application/json', ...options.headers },
     signal: AbortSignal.timeout(20_000),
   })
   const body = await res.json().catch(() => null)

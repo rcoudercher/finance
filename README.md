@@ -3,8 +3,6 @@
 Single-user personal finance tracker: assets, dated balance valuations, and a EUR net-worth history.
 Nuxt 4 · Nuxt UI (UChart) · Drizzle ORM · SQLite (better-sqlite3) · Zod · pnpm.
 
-Served at **https://finance.example.com**. That address only works over the VPN, which is the access control.
-
 ## Setup
 
 ```sh
@@ -31,15 +29,19 @@ pnpm dev                    # http://127.0.0.1:3000
 Environment variables: `DATABASE_PATH` (default `./data/finance.sqlite`), `HOST`, `PORT`.
 `data/` is git-ignored.
 
-> On this 1 GB VPS, `pnpm typecheck` and `pnpm build` need swap; `deploy/install-root.sh` adds 2 GB.
+> On a machine with ~1 GB of RAM, `pnpm typecheck` and `pnpm build` need swap.
 
 ## Financial rules
 
 - **Money** is stored as integer minor units (cents). The API accepts and returns decimal **strings** with at most
   two decimals (`"1234.56"`). Each amount must be within ±9 999 999 999 999.99. Totals are summed with BigInt, so
   there are no float rounding errors.
-- **Valuations are total balances** observed on a calendar date. They are not cash flows, and the app does not
-  compute investment returns. Each asset can have at most one valuation per date.
+- **Valuations are total balances** observed on a calendar date. They are not cash flows. Each asset can have at
+  most one valuation per date.
+- **Paid in** (optional, EUR) on a valuation is the total net amount put into the asset so far (deposits minus
+  withdrawals). **Gains** = value − paid in. The **return** is money-weighted (IRR) from the first valuation with a
+  paid-in figure; a change in paid in is assumed to happen halfway between two valuations. It is shown per year only
+  once there is at least a year of data. BTC values are converted at that date's rate; other currencies have none.
 - **Dates** are `YYYY-MM-DD` calendar dates. "Today" and timestamps use the **Europe/Paris** calendar.
   Valuations cannot be dated in the future.
 - **Current value** is the latest valuation dated on or before today.
@@ -94,75 +96,47 @@ Errors are JSON `{ statusCode, statusMessage, message, data? }`:
 **400** for validation errors (`data.issues`), **404** for a missing record, **409** for a duplicate date or a
 locked currency.
 
-## Production on the VPS
+## Production
 
-The app listens on `127.0.0.1:8081` only. Nginx terminates HTTPS for `finance.example.com` with the `*.example.com`
-wildcard certificate. It listens only on the the VPN IP. **The app has no login of its own**, so access is
-limited to devices on the owner's private network. Never expose this site on a public interface without adding authentication. See `~/projects/proxy/SETUP.md` for the shared Nginx/TLS setup.
-
-One-time setup:
-```sh
-sudo bash deploy/install-root.sh   # swap, systemd unit (started), nginx site
-# DNS: covered by the DNS wildcard *.example.com A <private-ip> (DNS-only)
-```
+Build with `pnpm build` and run `.output/server/index.mjs` (or `pnpm start`) with `HOST=127.0.0.1` and a `PORT`,
+behind a reverse proxy that terminates HTTPS. **The app has no login of its own**: only serve it on a private network
+(e.g. a VPN), never on a public interface without adding authentication.
 
 Deploy or update:
 ```sh
-cd ~/projects/finance
-git pull                                   # if applicable
+git pull
 pnpm install --frozen-lockfile
+pnpm db:backup
 pnpm build
-DATABASE_PATH=$PWD/data/finance.sqlite pnpm db:migrate
-sudo systemctl restart finance
-systemctl status finance; journalctl -u finance -n 50
-curl https://finance.example.com/api/dashboard?range=1M   # from a the VPN device
+pnpm db:migrate
+# then restart the service
 ```
-
-Files: `deploy/finance.service` (systemd, with a 300 MB memory limit and a read-only home except `data/`),
-`deploy/nginx-finance.example.com.conf` (also copied to `~/projects/proxy/nginx/sites/`).
 
 ## Backup and restore
 
 `pnpm db:backup` (`scripts/backup.mjs`) takes an online snapshot with SQLite's backup API. That's safe while the
 app is running and includes recent writes still in the `-wal` file. It runs `integrity_check` on the snapshot,
 gzips it to `~/backups/finance/finance-<UTC timestamp>.sqlite.gz` (mode 600), and deletes snapshots older than
-30 days (`BACKUP_KEEP_DAYS`). Don't back up by copying `data/finance.sqlite` directly.
+30 days (`BACKUP_KEEP_DAYS`). Don't back up by copying `data/finance.sqlite` directly. Run it daily from cron, and
+keep copies off the server.
 
-Daily at 03:15 UTC from the crontab (`crontab -e`), logging to `~/logs/finance-backup.log`:
-```
-15 3 * * * cd /home/you/projects/finance && /home/you/.local/bin/node scripts/backup.mjs >> /home/you/logs/finance-backup.log 2>&1
-```
-Check it with `tail ~/logs/finance-backup.log; ls -lh ~/backups/finance`. Also keep copies off the VPS.
-
-To restore:
-```sh
-sudo systemctl stop finance
-cp data/finance.sqlite data/finance.sqlite.before-restore 2>/dev/null || true
-rm -f data/finance.sqlite-wal data/finance.sqlite-shm
-gunzip -c ~/backups/finance/finance-YYYY-MM-DD-HH-MM-SS.sqlite.gz > data/finance.sqlite
-pnpm db:migrate                      # brings an older backup up to the current schema
-sudo systemctl start finance
-```
+To restore: stop the app, delete `data/finance.sqlite-wal` and `-shm`, `gunzip -c` a snapshot to
+`data/finance.sqlite`, run `pnpm db:migrate` (brings an older backup up to the current schema), and start the app.
 
 ## BTC-EUR rate
 
 `scripts/btc-rate.mjs` stores today's BTC-EUR rate (Europe/Paris date) from the public Coinbase spot price, no key
 needed, through `PUT /api/rates`. A day that already has a rate is replaced, so reruns are harmless. On error it saves
 nothing and exits 1; the last rate carries forward. `--from YYYY-MM-DD` also backfills daily closes (Coinbase UTC
-daily candles) from that date to yesterday, e.g. after recording a past BTC quantity.
+daily candles) from that date to yesterday, e.g. after recording a past BTC quantity. Run it daily from cron.
 
-Daily at 21:50 UTC (22:50/23:50 Paris) from the crontab, logging to `~/logs/btc-rate.log`:
-```
-50 21 * * * cd /home/you/projects/finance && /home/you/.local/bin/node scripts/btc-rate.mjs >> /home/you/logs/btc-rate.log 2>&1
-```
 ## Project layout
 
 ```
-app/                 Nuxt UI pages (dashboard, assets, asset detail), modals, chart
+app/                 Nuxt UI pages (dashboard, assets, budget, calculator), modals, charts
 server/api/          REST routes (validated with Zod)
 server/database/     Drizzle schema, migrations, client, seeder
 server/utils/        repository (domain rules), HTTP error helpers
 shared/utils/        money, dates, history computation, validation (shared by server, UI and tests)
 tests/               Vitest suites
-deploy/              systemd unit, nginx site, root install script
 ```

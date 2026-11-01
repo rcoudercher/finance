@@ -11,3 +11,7 @@ data/
 !.env.example
 *.log
 test-results/
+
+# Private deployment details (kept on the server only)
+DEPLOY.md
+deploy/
